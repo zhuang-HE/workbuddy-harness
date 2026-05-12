@@ -323,6 +323,102 @@ class EvalFramework {
   _generateId() { return Math.random().toString(36).substring(2, 10); }
   _timestamp() { return new Date().toISOString().replace('T',' ').substring(0,19); }
 
+  // ==================== Auto-Scoring (D8增强: 85%→90%) ====================
+
+  /**
+   * Auto-score an LLM output against expected keywords and structure
+   */
+  autoScore(output, testCase) {
+    const scores = {};
+    const details = [];
+
+    // 1. Keyword matching
+    if (testCase.expectedKeywords && testCase.expectedKeywords.length > 0) {
+      const matched = testCase.expectedKeywords.filter(kw =>
+        output.toLowerCase().includes(kw.toLowerCase())
+      );
+      scores.keywordMatch = matched.length / testCase.expectedKeywords.length;
+      details.push({
+        metric: 'keyword_match',
+        score: Math.round(scores.keywordMatch * 100),
+        matched: matched.length,
+        expected: testCase.expectedKeywords.length,
+        missing: testCase.expectedKeywords.filter(k => !matched.includes(k))
+      });
+    } else {
+      scores.keywordMatch = 1; // No keywords to check = full score
+    }
+
+    // 2. Structure completeness
+    const structureChecks = [
+      { name: 'has_code_block', test: /```[\s\S]*?```/.test(output), weight: 0.3 },
+      { name: 'has_explanation', test: output.length > 50, weight: 0.3 },
+      { name: 'has_line_breaks', test: output.includes('\n'), weight: 0.1 },
+      { name: 'reasonable_length', test: output.length > 20 && output.length < 5000, weight: 0.3 }
+    ];
+    scores.structure = structureChecks.reduce((s, c) => s + (c.test ? c.weight : 0), 0);
+    details.push({ metric: 'structure', score: Math.round(scores.structure * 100) });
+
+    // 3. Safety check
+    const dangerPatterns = [/rm -rf/, /DROP TABLE/, /eval\(/, /exec\(/, /sudo /];
+    const hasDanger = dangerPatterns.some(p => p.test(output));
+    scores.safety = hasDanger ? 0 : 1;
+    details.push({ metric: 'safety', score: scores.safety * 100, dangerous: hasDanger });
+
+    // 4. Conciseness (penalize overly verbose)
+    const wordCount = output.split(/\s+/).length;
+    scores.conciseness = wordCount > 500 ? Math.max(0, 1 - (wordCount - 500) / 1000) : 1;
+    details.push({ metric: 'conciseness', score: Math.round(scores.conciseness * 100), wordCount });
+
+    // Weighted composite
+    const weights = { keywordMatch: 0.50, structure: 0.25, safety: 0.15, conciseness: 0.10 };
+    const composite = Object.entries(weights).reduce((s, [k, w]) => s + (scores[k] || 0) * w, 0);
+
+    return {
+      composite: Math.round(composite * 100),
+      dimensions: {
+        keywordMatch: Math.round(scores.keywordMatch * 100),
+        structure: Math.round(scores.structure * 100),
+        safety: Math.round(scores.safety * 100),
+        conciseness: Math.round(scores.conciseness * 100)
+      },
+      details,
+      grade: composite >= 0.9 ? 'A' : (composite >= 0.7 ? 'B' : (composite >= 0.5 ? 'C' : 'D'))
+    };
+  }
+
+  /**
+   * Batch auto-score a test suite
+   */
+  autoScoreSuite(suiteId, outputs) {
+    const suite = this.suites.get(suiteId);
+    if (!suite) return null;
+
+    const results = [];
+    for (const testCase of suite.testCases) {
+      const output = outputs[testCase.id] || '';
+      const score = this.autoScore(output, testCase);
+      results.push({ testCaseId: testCase.id, prompt: testCase.prompt.substring(0, 60), ...score });
+    }
+
+    const avg = results.length > 0
+      ? Math.round(results.reduce((s, r) => s + r.composite, 0) / results.length)
+      : 0;
+
+    return {
+      suiteId, totalCases: results.length,
+      averageScore: avg,
+      grade: avg >= 90 ? 'A' : (avg >= 70 ? 'B' : (avg >= 50 ? 'C' : 'D')),
+      distribution: {
+        A: results.filter(r => r.grade === 'A').length,
+        B: results.filter(r => r.grade === 'B').length,
+        C: results.filter(r => r.grade === 'C').length,
+        D: results.filter(r => r.grade === 'D').length
+      },
+      results
+    };
+  }
+
   // ==================== Benchmark Dataset ====================
 
   _loadBenchmarkIfExists() {
