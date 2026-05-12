@@ -153,16 +153,24 @@ class MemoryGraph {
 
   // ==================== 主动召回 ====================
 
-  recall(context, limit = 5) {
+  recall(context, limit = 5, options = {}) {
     const ctxKeywords = this._extractKeywords(context);
     const scored = [];
+    const { includeType, minImportance, boostRecent } = options;
 
     for (const [id, node] of this.nodes) {
+      // 过滤条件
+      if (includeType && node.type !== includeType) continue;
+      if (minImportance && node.importance < minImportance) continue;
+
       // Relevance score: keyword match + importance + recency
       const kwMatch = ctxKeywords.filter(k => node.keywords.includes(k)).length;
       const kwScore = ctxKeywords.length > 0 ? kwMatch / ctxKeywords.length : 0;
       const impScore = node.importance / 5;
-      const decay = this._timeDecay(node.lastAccess);
+      let decay = this._timeDecay(node.lastAccess);
+      
+      // 近期访问加成
+      if (boostRecent && decay > 0.8) decay *= 1.2;
 
       // Also boost if linked nodes match
       let linkBonus = 0;
@@ -170,12 +178,28 @@ class MemoryGraph {
         const linked = this.nodes.get(linkId);
         if (linked) {
           const linkMatch = ctxKeywords.filter(k => linked.keywords.includes(k)).length;
-          if (linkMatch > 0) linkBonus += 0.1;
+          if (linkMatch > 0) linkBonus += 0.15;
         }
       }
 
-      const score = kwScore * 0.5 + impScore * 0.2 + decay * 0.15 + linkBonus * 0.15;
-      if (score > 0.1) scored.push({ id, content: node.content, type: node.type, score: Math.round(score * 100) / 100, keywords: node.keywords.slice(0, 5), relatedCount: node.links.length });
+      // Semantic boost: 检查内容是否直接包含上下文
+      let semanticBoost = 0;
+      if (node.content.toLowerCase().includes(context.toLowerCase().substring(0, 20))) {
+        semanticBoost = 0.2;
+      }
+
+      const score = kwScore * 0.4 + impScore * 0.2 + decay * 0.2 + linkBonus * 0.15 + semanticBoost;
+      if (score > 0.1) {
+        scored.push({ 
+          id, 
+          content: node.content, 
+          type: node.type, 
+          score: Math.round(score * 100) / 100, 
+          keywords: node.keywords.slice(0, 5), 
+          relatedCount: node.links.length,
+          importance: node.importance
+        });
+      }
     }
 
     scored.sort((a, b) => b.score - a.score);
