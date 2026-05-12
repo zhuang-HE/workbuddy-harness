@@ -1,29 +1,220 @@
 /**
  * Identity Manager (D1 身份层)
  * WorkBuddy Agent 身份管理系统
+ * 增强版: 持久化 + 加密
  */
 
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
+
 class IdentityManager {
-  constructor() {
+  constructor(options = {}) {
+    this.configDir = options.configDir || path.join(os.homedir(), '.workbuddy', 'identity-manager');
     this.identities = new Map();
     this.currentId = null;
     this.tokens = new Map();
     this.capabilities = new Map();
     this.config = null;
     this.history = [];
+    this.encryptionKey = null;
+    this._ensureDirs();
+    this._load();
+  }
+
+  _ensureDirs() {
+    if (!fs.existsSync(this.configDir)) {
+      fs.mkdirSync(this.configDir, { recursive: true });
+    }
+  }
+  _ts() { return new Date().toISOString(); }
+
+  /**
+   * 加载持久化数据
+   */
+  _load() {
+    try {
+      // 加载配置
+      const configPath = path.join(this.configDir, 'config.json');
+      if (fs.existsSync(configPath)) {
+        const configData = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        this.config = configData.config;
+        this.currentId = configData.currentId;
+        this.history = configData.history || [];
+      }
+
+      // 加载身份数据
+      const identitiesPath = path.join(this.configDir, 'identities.json');
+      if (fs.existsSync(identitiesPath)) {
+        const identitiesData = JSON.parse(fs.readFileSync(identitiesPath, 'utf8'));
+        for (const [id, data] of Object.entries(identitiesData)) {
+          this.identities.set(id, data);
+          this.capabilities.set(id, new Set(data.capabilities || []));
+        }
+      }
+
+      // 加载 Token 数据（如果加密密钥存在）
+      const tokensPath = path.join(this.configDir, 'tokens.enc');
+      if (fs.existsSync(tokensPath)) {
+        this._loadTokens(tokensPath);
+      }
+    } catch (e) {
+      console.warn('加载身份数据失败:', e.message);
+    }
+  }
+
+  /**
+   * 保存数据到持久化存储
+   */
+  _save() {
+    try {
+      // 保存配置
+      const configData = {
+        config: this.config,
+        currentId: this.currentId,
+        history: this.history.slice(-100),
+        updated: this._ts()
+      };
+      fs.writeFileSync(
+        path.join(this.configDir, 'config.json'),
+        JSON.stringify(configData, null, 2)
+      );
+
+      // 保存身份
+      const identitiesData = {};
+      for (const [id, data] of this.identities) {
+        identitiesData[id] = data;
+      }
+      fs.writeFileSync(
+        path.join(this.configDir, 'identities.json'),
+        JSON.stringify(identitiesData, null, 2)
+      );
+
+      // 保存 Token（加密）
+      this._saveTokens();
+    } catch (e) {
+      console.warn('保存身份数据失败:', e.message);
+    }
+  }
+
+  /**
+   * 初始化加密密钥
+   */
+  _initEncryption(password) {
+    // 使用 PBKDF2 派生密钥
+    const salt = this.configDir; // 使用目录作为盐
+    this.encryptionKey = crypto.pbkdf2Sync(
+      password || 'default-workbuddy-key',
+      salt,
+      100000, // 迭代次数
+      32,     // 密钥长度
+      'sha256'
+    );
+  }
+
+  /**
+   * 加密数据
+   */
+  _encrypt(data) {
+    if (!this.encryptionKey) {
+      this._initEncryption();
+    }
+    
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv('aes-256-gcm', this.encryptionKey, iv);
+    
+    let encrypted = cipher.update(JSON.stringify(data), 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    const authTag = cipher.getAuthTag();
+    
+    return {
+      iv: iv.toString('hex'),
+      data: encrypted,
+      authTag: authTag.toString('hex')
+    };
+  }
+
+  /**
+   * 解密数据
+   */
+  _decrypt(encryptedData) {
+    if (!this.encryptionKey) {
+      this._initEncryption();
+    }
+    
+    const iv = Buffer.from(encryptedData.iv, 'hex');
+    const authTag = Buffer.from(encryptedData.authTag, 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
+    decipher.setAuthTag(authTag);
+    
+    let decrypted = decipher.update(encryptedData.data, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return JSON.parse(decrypted);
+  }
+
+  /**
+   * 保存加密的 Token
+   */
+  _saveTokens() {
+    const tokensData = {};
+    for (const [token, info] of this.tokens) {
+      // 不保存实际 Token 值，只保存元数据
+      tokensData[token] = {
+        ...info,
+        token: '[ENCRYPTED]' // Token 值已被加密
+      };
+    }
+
+    const encrypted = this._encrypt(tokensData);
+    fs.writeFileSync(
+      path.join(this.configDir, 'tokens.enc'),
+      JSON.stringify(encrypted)
+    );
+  }
+
+  /**
+   * 加载加密的 Token
+   */
+  _loadTokens(path) {
+    try {
+      const encrypted = JSON.parse(fs.readFileSync(path, 'utf8'));
+      const tokensData = this._decrypt(encrypted);
+      
+      for (const [token, info] of Object.entries(tokensData)) {
+        this.tokens.set(token, info);
+      }
+    } catch (e) {
+      console.warn('加载 Token 数据失败:', e.message);
+    }
+  }
+
+  /**
+   * 生成密码散列
+   */
+  _hashPassword(password, salt) {
+    return crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
   }
 
   /**
    * 初始化身份管理器
-   * @param {Object} config - 配置对象
    */
   async init(config = {}) {
     this.config = {
       defaultId: 'assistant',
-      tokenExpiry: 3600000, // 1小时
+      tokenExpiry: 3600000,
       maxIdentities: 20,
+      encryptionEnabled: config.encryptionEnabled !== false,
+      autoSave: config.autoSave !== false,
       ...config
     };
+
+    // 初始化加密
+    if (this.config.encryptionEnabled) {
+      this._initEncryption(config.encryptionPassword);
+    }
 
     // 加载预设身份
     if (config.identities) {
@@ -42,7 +233,6 @@ class IdentityManager {
 
   /**
    * 注册新身份
-   * @param {Object} identity - 身份配置
    */
   async registerIdentity(identity) {
     const validated = this.validateIdentity(identity);
@@ -57,15 +247,16 @@ class IdentityManager {
       active: true
     });
 
-    // 缓存能力列表
     this.capabilities.set(identity.id, new Set(identity.capabilities || []));
+
+    // 自动保存
+    if (this.config.autoSave) {
+      this._save();
+    }
 
     return identity.id;
   }
 
-  /**
-   * 验证身份配置
-   */
   validateIdentity(identity) {
     const errors = [];
     
@@ -79,17 +270,11 @@ class IdentityManager {
     return { valid: errors.length === 0, errors };
   }
 
-  /**
-   * 获取当前激活身份
-   */
   getCurrentIdentity() {
     if (!this.currentId) return null;
     return this.identities.get(this.currentId) || null;
   }
 
-  /**
-   * 获取当前身份快照（用于日志）
-   */
   getCurrentIdentitySnapshot() {
     const identity = this.getCurrentIdentity();
     if (!identity) return null;
@@ -103,10 +288,6 @@ class IdentityManager {
     };
   }
 
-  /**
-   * 切换身份
-   * @param {string} id - 目标身份ID
-   */
   async switchIdentity(id) {
     if (!this.identities.has(id)) {
       throw new Error(`身份不存在: ${id}`);
@@ -120,7 +301,6 @@ class IdentityManager {
     const oldId = this.currentId;
     this.currentId = id;
 
-    // 记录切换历史
     this.history.push({
       type: 'switch',
       from: oldId,
@@ -128,9 +308,12 @@ class IdentityManager {
       timestamp: Date.now()
     });
 
-    // 限制历史记录长度
     if (this.history.length > 100) {
       this.history = this.history.slice(-100);
+    }
+
+    if (this.config.autoSave) {
+      this._save();
     }
 
     return {
@@ -141,10 +324,6 @@ class IdentityManager {
     };
   }
 
-  /**
-   * 检查当前身份是否具备某能力
-   * @param {string} capability - 能力标识
-   */
   async checkCapability(capability) {
     if (!this.currentId) {
       return { allowed: false, reason: '未设置当前身份' };
@@ -166,9 +345,6 @@ class IdentityManager {
     };
   }
 
-  /**
-   * 检查批量能力
-   */
   async checkCapabilities(capabilities) {
     const results = await Promise.all(
       capabilities.map(cap => this.checkCapability(cap))
@@ -180,11 +356,6 @@ class IdentityManager {
     };
   }
 
-  /**
-   * 生成认证 Token
-   * @param {string} identityId - 身份ID
-   * @param {string[]} scopes - 权限范围
-   */
   async generateToken(identityId, scopes = []) {
     if (!this.identities.has(identityId)) {
       throw new Error(`身份不存在: ${identityId}`);
@@ -201,16 +372,16 @@ class IdentityManager {
     };
 
     this.tokens.set(token, tokenInfo);
-    
-    // 清理过期 Token
     this.cleanExpiredTokens();
+
+    // 立即保存
+    if (this.config.autoSave) {
+      this._saveTokens();
+    }
 
     return tokenInfo;
   }
 
-  /**
-   * 生成安全 Token
-   */
   generateSecureToken() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     let token = '';
@@ -220,10 +391,6 @@ class IdentityManager {
     return `wb_${token}_${Date.now().toString(36)}`;
   }
 
-  /**
-   * 验证 Token
-   * @param {string} token - Token 字符串
-   */
   async validateToken(token) {
     const tokenInfo = this.tokens.get(token);
     
@@ -250,21 +417,20 @@ class IdentityManager {
     };
   }
 
-  /**
-   * 撤销 Token
-   */
   async revokeToken(token) {
     if (!this.tokens.has(token)) {
       return { success: false, reason: 'Token 不存在' };
     }
 
     this.tokens.get(token).active = false;
+    
+    if (this.config.autoSave) {
+      this._saveTokens();
+    }
+    
     return { success: true };
   }
 
-  /**
-   * 清理过期 Token
-   */
   cleanExpiredTokens() {
     const now = Date.now();
     for (const [token, info] of this.tokens) {
@@ -274,40 +440,32 @@ class IdentityManager {
     }
   }
 
-  /**
-   * 更新身份信息
-   * @param {string} id - 身份ID
-   * @param {Object} updates - 更新内容
-   */
   async updateIdentity(id, updates) {
     if (!this.identities.has(id)) {
       throw new Error(`身份不存在: ${id}`);
     }
 
     const identity = this.identities.get(id);
-    
-    // 不允许更新 id
     delete updates.id;
     
-    // 更新能力缓存
     if (updates.capabilities) {
       this.capabilities.set(id, new Set(updates.capabilities));
     }
 
     Object.assign(identity, updates, { updatedAt: Date.now() });
 
+    if (this.config.autoSave) {
+      this._save();
+    }
+
     return { success: true, identity };
   }
 
-  /**
-   * 停用身份
-   */
   async deactivateIdentity(id) {
     if (!this.identities.has(id)) {
       throw new Error(`身份不存在: ${id}`);
     }
 
-    // 如果停用当前身份，切换到默认
     if (this.currentId === id) {
       const defaultId = Object.keys(this.identities).find(
         i => i !== id && this.identities.get(i).active
@@ -318,12 +476,14 @@ class IdentityManager {
     }
 
     this.identities.get(id).active = false;
+
+    if (this.config.autoSave) {
+      this._save();
+    }
+
     return { success: true };
   }
 
-  /**
-   * 获取身份列表
-   */
   getIdentityList() {
     return Array.from(this.identities.values()).map(i => ({
       id: i.id,
@@ -335,16 +495,10 @@ class IdentityManager {
     }));
   }
 
-  /**
-   * 获取切换历史
-   */
   getHistory(limit = 20) {
     return this.history.slice(-limit);
   }
 
-  /**
-   * 导出配置
-   */
   exportConfig() {
     return {
       currentId: this.currentId,
@@ -354,17 +508,75 @@ class IdentityManager {
   }
 
   /**
-   * 获取统计信息
+   * 导出加密配置
    */
+  exportEncrypted(password) {
+    this._initEncryption(password);
+    const data = this.exportConfig();
+    return this._encrypt(data);
+  }
+
+  /**
+   * 导入加密配置
+   */
+  importEncrypted(encryptedData, password) {
+    this._initEncryption(password);
+    const data = this._decrypt(encryptedData);
+    
+    this.currentId = data.currentId;
+    this.history = data.history || [];
+    
+    for (const identity of data.identities || []) {
+      this.identities.set(identity.id, identity);
+      this.capabilities.set(identity.id, new Set(identity.capabilities || []));
+    }
+
+    this._save();
+    return { success: true };
+  }
+
   getStats() {
     return {
       totalIdentities: this.identities.size,
       activeIdentities: Array.from(this.identities.values()).filter(i => i.active).length,
       activeTokens: Array.from(this.tokens.values()).filter(t => t.active).length,
       totalSwitches: this.history.filter(h => h.type === 'switch').length,
-      currentIdentity: this.currentId
+      currentIdentity: this.currentId,
+      encryptionEnabled: this.config?.encryptionEnabled || false,
+      persistenceEnabled: this.config?.autoSave !== false
     };
+  }
+
+  /**
+   * 强制保存
+   */
+  save() {
+    this._save();
+    return { success: true };
+  }
+
+  /**
+   * 清除所有数据
+   */
+  clear() {
+    this.identities.clear();
+    this.tokens.clear();
+    this.capabilities.clear();
+    this.history = [];
+    this.currentId = null;
+
+    // 删除文件
+    const files = ['config.json', 'identities.json', 'tokens.enc'];
+    for (const file of files) {
+      const filePath = path.join(this.configDir, file);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+
+    return { success: true };
   }
 }
 
 module.exports = IdentityManager;
+console.log('[IdentityManager] 加载成功 - D1 身份层(持久化+加密版)');

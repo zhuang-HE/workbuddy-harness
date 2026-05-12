@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * P4-8 LearningLoop - 学习闭环 (O→A→L→E→A)
- * 增强版: 支持 MEDIUM 置信度提取 + 本能进化 + 自动应用
+ * P4-8 LearningLoop - 学习闭环增强版
+ * 增强版: 强化学习 + 模式识别 + 自适应学习率
  */
 
 const fs = require('fs');
@@ -17,32 +17,50 @@ class LearningLoop {
       cycle: 0,
       totalLearned: 0,
       lastRun: null,
-      autoApplyThreshold: 85  // 自动应用阈值
+      autoApplyThreshold: 85
     };
     
-    // 扩展置信度层级
+    // 强化学习状态
+    this.qTable = new Map(); // state -> { action: qValue }
+    this.learningRate = 0.1;
+    this.discountFactor = 0.9;
+    this.explorationRate = 0.2;
+    
+    // 模式识别
+    this.patternRecognizer = new PatternRecognizer();
+    
+    // 自适应学习率
+    this.adaptiveLearning = {
+      enabled: true,
+      baseLR: 0.1,
+      currentLR: 0.1,
+      decayRate: 0.99,
+      minLR: 0.01
+    };
+    
     this.Confidence = {
-      CRITICAL: 95,   // 自动应用
-      HIGH: 80,        // 主动建议
-      MEDIUM: 60,      // 观察学习
-      LOW: 40,         // 实验性
-      EXPERIMENTAL: 20 // 待验证
+      CRITICAL: 95,
+      HIGH: 80,
+      MEDIUM: 60,
+      LOW: 40,
+      EXPERIMENTAL: 20
     };
     
     this.Phase = {
-      OBSERVE: 'observe',      // 观察
-      ANALYZE: 'analyze',      // 分析
-      LEARN: 'learn',          // 学习
-      EVALUATE: 'evaluate',    // 评估
-      APPLY: 'apply',          // 应用
-      REFINE: 'refine'         // 精炼
+      OBSERVE: 'observe',
+      ANALYZE: 'analyze',
+      LEARN: 'learn',
+      EVALUATE: 'evaluate',
+      APPLY: 'apply',
+      REFINE: 'refine'
     };
     
-    // 确保目录存在
-    ['sessions', 'instincts', 'feedback', 'applied'].forEach(d => {
+    ['sessions', 'instincts', 'feedback', 'applied', 'models'].forEach(d => {
       const p = path.join(this.configDir, d);
       if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
     });
+    
+    this._load();
   }
   
   _id() {
@@ -53,9 +71,175 @@ class LearningLoop {
     return new Date().toISOString();
   }
   
+  _load() {
+    try {
+      const qPath = path.join(this.configDir, 'models', 'q_table.json');
+      if (fs.existsSync(qPath)) {
+        const qData = JSON.parse(fs.readFileSync(qPath, 'utf8'));
+        this.qTable = new Map(Object.entries(qData));
+      }
+      
+      const statePath = path.join(this.configDir, 'feedback', 'state.json');
+      if (fs.existsSync(statePath)) {
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+        Object.assign(this.adaptiveLearning, state.adaptiveLearning || {});
+      }
+    } catch (e) {}
+  }
+  
+  _save() {
+    try {
+      // 保存 Q 表
+      fs.writeFileSync(
+        path.join(this.configDir, 'models', 'q_table.json'),
+        JSON.stringify(Object.fromEntries(this.qTable))
+      );
+      
+      // 保存状态
+      fs.writeFileSync(
+        path.join(this.configDir, 'feedback', 'state.json'),
+        JSON.stringify({ adaptiveLearning: this.adaptiveLearning, updated: this._ts() })
+      );
+    } catch (e) {}
+  }
+  
+  // ==================== 强化学习 ====================
+  
   /**
-   * O - Observe: 观察并分析会话
+   * 获取状态的 Q 值
    */
+  getQValues(state) {
+    if (!this.qTable.has(state)) {
+      this.qTable.set(state, {});
+    }
+    return this.qTable.get(state);
+  }
+  
+  /**
+   * Q-Learning 更新
+   */
+  updateQ(state, action, reward, nextState) {
+    const qValues = this.getQValues(state);
+    const currentQ = qValues[action] || 50; // 初始 Q 值 50
+    
+    // 获取下一个状态的最大 Q 值
+    const nextQValues = this.getQValues(nextState);
+    const maxNextQ = Math.max(...Object.values(nextQValues), 50);
+    
+    // Q-Learning 公式
+    const newQ = currentQ + this.adaptiveLearning.currentLR * (
+      reward + this.discountFactor * maxNextQ - currentQ
+    );
+    
+    qValues[action] = Math.max(0, Math.min(100, newQ));
+    
+    // 更新自适应学习率
+    this._updateAdaptiveLearningRate(reward);
+    
+    return { oldQ: currentQ, newQ: qValues[action] };
+  }
+  
+  /**
+   * 选择动作 (ε-greedy)
+   */
+  selectAction(state, availableActions) {
+    if (Math.random() < this.explorationRate) {
+      // 探索：随机选择
+      return {
+        action: availableActions[Math.floor(Math.random() * availableActions.length)],
+        type: 'explore'
+      };
+    } else {
+      // 利用：选择 Q 值最高的动作
+      const qValues = this.getQValues(state);
+      let bestAction = availableActions[0];
+      let bestQ = qValues[bestAction] || 0;
+      
+      for (const action of availableActions) {
+        const q = qValues[action] || 0;
+        if (q > bestQ) {
+          bestQ = q;
+          bestAction = action;
+        }
+      }
+      
+      return { action: bestAction, type: 'exploit', qValue: bestQ };
+    }
+  }
+  
+  /**
+   * 更新自适应学习率
+   */
+  _updateAdaptiveLearningRate(reward) {
+    if (!this.adaptiveLearning.enabled) return;
+    
+    if (reward > 0) {
+      // 正反馈：降低学习率（稳定）
+      this.adaptiveLearning.currentLR *= this.adaptiveLearning.decayRate;
+    } else {
+      // 负反馈：提高学习率（探索）
+      this.adaptiveLearning.currentLR = Math.min(
+        0.5,
+        this.adaptiveLearning.currentLR * 1.5
+      );
+    }
+    
+    this.adaptiveLearning.currentLR = Math.max(
+      this.adaptiveLearning.minLR,
+      this.adaptiveLearning.currentLR
+    );
+  }
+  
+  /**
+   * 获取最佳策略建议
+   */
+  getBestStrategy(state) {
+    const qValues = this.getQValues(state);
+    const entries = Object.entries(qValues);
+    
+    if (entries.length === 0) {
+      return { action: null, qValue: 0, confidence: 0 };
+    }
+    
+    entries.sort((a, b) => b[1] - a[1]);
+    const [action, qValue] = entries[0];
+    const confidence = Math.min(100, qValue);
+    
+    return { action, qValue, confidence };
+  }
+  
+  // ==================== 模式识别 ====================
+  
+  /**
+   * 识别任务模式
+   */
+  recognizePatterns(data) {
+    const patterns = this.patternRecognizer.recognize(data);
+    
+    // 添加基于 Q-Learning 的模式
+    const state = this._getStateKey(data);
+    const qPatterns = this.getBestStrategy(state);
+    
+    if (qPatterns.action) {
+      patterns.push({
+        type: 'q_learned',
+        action: qPatterns.action,
+        confidence: qPatterns.confidence,
+        source: 'reinforcement'
+      });
+    }
+    
+    return patterns;
+  }
+  
+  _getStateKey(data) {
+    const complexity = Math.floor((data.complexity || 5) / 3);
+    const toolCalls = Math.floor((data.toolCalls || 0) / 5);
+    return `c${complexity}_t${toolCalls}`;
+  }
+  
+  // ==================== O - Observe ====================
+  
   analyzeSession(data) {
     const analysis = {
       sessionId: data.id || this._id(),
@@ -71,23 +255,12 @@ class LearningLoop {
       recommendations: []
     };
     
-    // 模式识别 (扩展)
-    if (data.toolCalls > 10 && data.success) {
-      analysis.patterns.push({ type: 'high_tool_usage_success', confidence: 70 });
-    }
-    if (data.errorCount === 0 && data.complexity > 5) {
-      analysis.patterns.push({ type: 'complex_task_flawless', confidence: 85 });
-    }
-    if (data.toolCalls > 3 && data.toolCalls < 8 && data.success) {
-      analysis.patterns.push({ type: 'efficient_execution', confidence: 75 });
-    }
-    // 新增: 快速任务识别
-    if (data.duration < 5000 && data.success) {
-      analysis.patterns.push({ type: 'quick_resolution', confidence: 80 });
-    }
-    // 新增: 错误恢复能力
-    if (data.errorCount > 0 && data.success) {
-      analysis.patterns.push({ type: 'error_recovery', confidence: 90 });
+    // 模式识别
+    analysis.patterns = this.recognizePatterns(data);
+    
+    // 强化学习反馈
+    if (data.reward !== undefined) {
+      analysis.qLearningResult = this._processQLearning(data);
     }
     
     this.sessions.push(analysis);
@@ -98,30 +271,35 @@ class LearningLoop {
     return analysis;
   }
   
-  /**
-   * A - Analyze: 从分析中抽取本能 (降低阈值到 MEDIUM)
-   */
+  _processQLearning(data) {
+    const state = this._getStateKey(data);
+    const action = data.action || data.taskType;
+    const reward = data.reward || (data.success ? 10 : -5);
+    const nextState = this._getStateKey({ ...data, success: true });
+    
+    return this.updateQ(state, action, reward, nextState);
+  }
+  
+  // ==================== A - Analyze ====================
+  
   extractInstincts(analysis) {
     const extracted = [];
     
     for (const pattern of analysis.patterns) {
-      // 降低阈值: MEDIUM (60+) 即可提取
       if (pattern.confidence >= this.Confidence.MEDIUM) {
         const exist = [...this.instincts.values()].find(i => i.type === pattern.type);
         
         if (exist) {
-          // 更新已有本能
           exist.confidence = Math.min(100, exist.confidence + 5);
           exist.occurrences++;
           exist.lastSeen = this._ts();
           extracted.push({ action: 'updated', instinct: exist });
         } else {
-          // 创建新本能
           const newInstinct = {
             id: 'inst_' + this._id(),
             type: pattern.type,
             confidence: pattern.confidence,
-            source: 'session_pattern',
+            source: pattern.source || 'session_pattern',
             occurrences: 1,
             firstSeen: this._ts(),
             lastSeen: this._ts(),
@@ -139,9 +317,8 @@ class LearningLoop {
     return extracted;
   }
   
-  /**
-   * L - Learn: 记录反馈并调整本能
-   */
+  // ==================== L - Learn ====================
+  
   recordFeedback(feedback) {
     const fb = {
       id: this._id(),
@@ -156,7 +333,12 @@ class LearningLoop {
     this.feedbackLoop.totalLearned++;
     this.feedbackLoop.lastRun = this._ts();
     
-    // 调整相关本能的置信度
+    // Q-Learning 更新
+    const state = this._getStateKey({ complexity: 5, toolCalls: 5, taskType: fb.taskType });
+    const action = fb.taskType;
+    this.updateQ(state, action, fb.reward, state);
+    
+    // 调整本能
     for (const [id, inst] of this.instincts) {
       if (inst.taskType === fb.taskType && inst.status === 'active') {
         if (fb.reward > 0) {
@@ -169,12 +351,12 @@ class LearningLoop {
       }
     }
     
+    this._save();
     return fb;
   }
   
-  /**
-   * E - Evaluate: 评估本能质量
-   */
+  // ==================== E - Evaluate ====================
+  
   evaluateInstincts() {
     const all = [...this.instincts.values()];
     const active = all.filter(i => i.status === 'active');
@@ -195,7 +377,6 @@ class LearningLoop {
   _generateRecommendations(active) {
     const recs = [];
     
-    // 推荐自动应用高置信度本能
     const autoApps = active.filter(i => i.autoApplicable && i.confidence >= 90);
     if (autoApps.length > 0) {
       recs.push({
@@ -205,7 +386,6 @@ class LearningLoop {
       });
     }
     
-    // 推荐淘汰低置信度本能
     const lowConf = active.filter(i => i.confidence < 30);
     if (lowConf.length > 0) {
       recs.push({
@@ -217,9 +397,8 @@ class LearningLoop {
     return recs;
   }
   
-  /**
-   * A - Apply: 应用本能到新任务
-   */
+  // ==================== A - Apply ====================
+  
   applyInstincts(taskType, options = {}) {
     const applicable = [...this.instincts.values()]
       .filter(i => i.status === 'active')
@@ -231,7 +410,8 @@ class LearningLoop {
       taskType,
       applicableCount: applicable.length,
       instincts: applicable.slice(0, options.limit || 5),
-      suggestions: this._generateSuggestions(applicable)
+      suggestions: this._generateSuggestions(applicable),
+      qLearningAdvice: this.getBestStrategy(this._getStateKey({ taskType }))
     };
   }
   
@@ -250,19 +430,18 @@ class LearningLoop {
       'complex_task_flawless': '此任务类型已掌握，可尝试优化',
       'efficient_execution': '当前执行效率良好，保持策略',
       'quick_resolution': '快速解决模式，适用于类似简单任务',
-      'error_recovery': '已掌握错误恢复，可增加挑战性'
+      'error_recovery': '已掌握错误恢复，可增加挑战性',
+      'q_learned': '基于强化学习推荐的最佳策略'
     };
     return map[inst.type] || '继续观察此模式';
   }
   
-  /**
-   * R - Refine: 精炼本能 (进化)
-   */
+  // ==================== R - Refine ====================
+  
   refineInstincts() {
     const refined = [];
     
     for (const [id, inst] of this.instincts) {
-      // 合并相似本能
       const similar = [...this.instincts.values()].filter(i => 
         i.id !== id && 
         i.type.includes(inst.type.substring(0, 10)) &&
@@ -270,39 +449,48 @@ class LearningLoop {
       );
       
       if (similar.length > 0) {
-        // 合并到主本能
         const primary = similar.find(s => s.occurrences > inst.occurrences) || inst;
         primary.confidence = Math.min(100, primary.confidence + 5);
         primary.occurrences += similar.reduce((s, i) => s + i.occurrences, 0);
         refined.push({ action: 'merged', primary: primary.id, merged: similar.map(s => s.id) });
         
-        // 删除被合并的
         similar.forEach(s => this.instincts.delete(s.id));
       }
     }
     
+    // 清理低质量 Q 值
+    this._pruneQTable();
+    
     return refined;
   }
   
-  /**
-   * 运行完整学习周期 (O→A→L→E→A→R)
-   */
+  _pruneQTable() {
+    // 保留高 Q 值条目
+    const threshold = 30;
+    for (const [state, qValues] of this.qTable) {
+      let hasHighValue = false;
+      for (const q of Object.values(qValues)) {
+        if (q > threshold) {
+          hasHighValue = true;
+          break;
+        }
+      }
+      if (!hasHighValue) {
+        this.qTable.delete(state);
+      }
+    }
+  }
+  
+  // ==================== 完整周期 ====================
+  
   runLearningCycle(data) {
     this.feedbackLoop.lastRun = this._ts();
     
-    // O - Observe
     const analysis = this.analyzeSession(data);
-    
-    // A - Analyze
     const instincts = this.extractInstincts(analysis);
-    
-    // E - Evaluate
     const evaluation = this.evaluateInstincts();
-    
-    // A - Apply (获取适用本能)
     const application = this.applyInstincts(data.taskType);
     
-    // R - Refine (定期精炼)
     let refinement = [];
     if (this.feedbackLoop.cycle % 10 === 0) {
       refinement = this.refineInstincts();
@@ -310,14 +498,18 @@ class LearningLoop {
     
     return {
       cycle: this.feedbackLoop.cycle,
-      phase: 'O→A→L→E→A→R',
+      phase: 'O→A→L→E→A→R+QL',
       analysis,
       instinctsExtracted: instincts.length,
-      instincts: instincts,
+      instincts,
       evaluation,
       application,
       refinement,
-      totalInstincts: this.instincts.size
+      totalInstincts: this.instincts.size,
+      qLearning: {
+        states: this.qTable.size,
+        learningRate: this.adaptiveLearning.currentLR
+      }
     };
   }
   
@@ -347,24 +539,66 @@ class LearningLoop {
       sessions: this.sessions.length,
       avgConfidence: evaluation.avgConfidence,
       autoApplicable: evaluation.autoApplicable,
-      recommendations: evaluation.recommendations
+      recommendations: evaluation.recommendations,
+      qLearning: {
+        states: this.qTable.size,
+        learningRate: this.adaptiveLearning.currentLR,
+        explorationRate: this.explorationRate
+      }
     };
   }
   
   reset() {
     this.sessions = [];
     this.instincts.clear();
+    this.qTable.clear();
     this.feedbackLoop = {
       cycle: 0,
       totalLearned: 0,
       lastRun: null,
       autoApplyThreshold: 85
     };
+    this.adaptiveLearning.currentLR = this.adaptiveLearning.baseLR;
     return { reset: true };
   }
 }
 
-// CLI 支持
+/**
+ * 模式识别器
+ */
+class PatternRecognizer {
+  recognize(data) {
+    const patterns = [];
+    
+    if (data.toolCalls > 10 && data.success) {
+      patterns.push({ type: 'high_tool_usage_success', confidence: 70 });
+    }
+    if (data.errorCount === 0 && data.complexity > 5) {
+      patterns.push({ type: 'complex_task_flawless', confidence: 85 });
+    }
+    if (data.toolCalls > 3 && data.toolCalls < 8 && data.success) {
+      patterns.push({ type: 'efficient_execution', confidence: 75 });
+    }
+    if (data.duration < 5000 && data.success) {
+      patterns.push({ type: 'quick_resolution', confidence: 80 });
+    }
+    if (data.errorCount > 0 && data.success) {
+      patterns.push({ type: 'error_recovery', confidence: 90 });
+    }
+    
+    // 新模式识别
+    if (data.complexity > 7 && data.success && data.errorCount === 0) {
+      patterns.push({ type: 'expert_level', confidence: 88 });
+    }
+    if (data.duration > 30000 && data.success) {
+      patterns.push({ type: 'deep_analysis', confidence: 82 });
+    }
+    
+    return patterns;
+  }
+}
+
+// CLI
 if (require.main === module) {
   const ll = new LearningLoop();
   const cmd = process.argv[2];
@@ -387,9 +621,9 @@ if (require.main === module) {
       });
       console.log('\n=== 学习周期 #' + result.cycle + ' ===');
       console.log('阶段:', result.phase);
+      console.log('Q-Learning:', result.qLearning);
       console.log('提取本能:', result.instinctsExtracted);
       console.log('活跃本能:', result.evaluation.active);
-      console.log('建议:', JSON.stringify(result.evaluation.recommendations));
       break;
     }
     
@@ -412,7 +646,7 @@ if (require.main === module) {
       console.log('\n=== 本能列表 (' + instincts.length + ') ===');
       instincts.forEach(i => {
         const auto = i.autoApplicable ? ' [自动应用]' : '';
-        console.log('  [' + i.confidence + '%]' + auto + ' ' + i.type + ' (occ:' + i.occurrences + ')');
+        console.log('  [' + i.confidence + '%]' + auto + ' ' + i.type);
       });
       break;
     }
@@ -423,18 +657,9 @@ if (require.main === module) {
         limit: parseInt(get('--limit', '5'))
       });
       console.log('\n=== 可应用本能 ===');
-      console.log('任务类型:', result.taskType || '全部');
-      console.log('可应用:', result.applicableCount);
+      console.log('Q-Learning建议:', result.qLearningAdvice);
       result.suggestions.forEach(s => {
         console.log('  [' + s.confidence + '%] ' + s.type + ': ' + s.suggestion);
-      });
-      break;
-    }
-    
-    case 'top': {
-      const n = parseInt(args[3]) || 5;
-      ll.getTopInstincts(n).forEach((i, idx) => {
-        console.log('#' + (idx + 1) + ' [' + i.confidence + '%] ' + i.type);
       });
       break;
     }
@@ -453,13 +678,12 @@ if (require.main === module) {
       
     case 'help':
     default:
-      console.log('\nLearningLoop P4-8 - 学习闭环 (O→A→L→E→A→R)\n');
+      console.log('\nLearningLoop P4-8 - 学习闭环(O→A→L→E→A→R+QL)\n');
       console.log('命令:');
       console.log('  cycle --session <id> --type <task> --complexity <n> --toolcalls <n>');
       console.log('  feedback --session <id> --type <task> --reward <n>');
       console.log('  instincts [--type <task>] [--min <conf>] [--auto]');
       console.log('  apply [--type <task>] [--auto] [--limit <n>]');
-      console.log('  top [n]');
       console.log('  stats');
       console.log('  reset');
       console.log('  help\n');
@@ -468,4 +692,4 @@ if (require.main === module) {
 }
 
 module.exports = LearningLoop;
-console.log('[LearningLoop] 加载成功 - P4-8 学习闭环(O→A→L→E→A→R)');
+console.log('[LearningLoop] 加载成功 - P4-8 学习闭环(强化学习版)');

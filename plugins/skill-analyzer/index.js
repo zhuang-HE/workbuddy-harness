@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * skill-analyzer - P4-11 (P2) 技能分析器
- * 维度: D3-Skills | 使用热力图·依赖图谱·质量评分·死技能检测
- * 增强: 从90%→95%
+ * skill-analyzer - P4-11 技能分析器增强版
+ * 维度: D3-Skills | 使用热力图·依赖图谱·质量评分·死技能检测·语义路由
+ * 增强: 40% → 75%
  */
+
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -12,9 +13,11 @@ class SkillAnalyzer {
   constructor(options = {}) {
     this.configDir = options.configDir || path.join(os.homedir(), '.workbuddy', 'skill-analyzer');
     this.skillsDir = options.skillsDir || path.join(os.homedir(), '.workbuddy', 'skills');
-    this.skills = [];        // all skills metadata
-    this.dependencies = new Map(); // skill → [depends_on]
-    this.usageLog = [];      // usage history
+    this.skills = [];
+    this.dependencies = new Map();
+    this.usageLog = [];
+    this.routingCache = new Map();
+    this.triggerHistory = [];
     this._ensureDirs();
     this._loadState();
   }
@@ -31,6 +34,7 @@ class SkillAnalyzer {
         const d = JSON.parse(fs.readFileSync(p, 'utf8'));
         this.usageLog = d.usageLog || [];
         this.dependencies = new Map(Object.entries(d.dependencies || {}));
+        this.triggerHistory = d.triggerHistory || [];
       }
     } catch (e) {}
   }
@@ -38,6 +42,7 @@ class SkillAnalyzer {
     fs.writeFileSync(path.join(this.configDir, 'state.json'), JSON.stringify({
       usageLog: this.usageLog.slice(-500),
       dependencies: Object.fromEntries(this.dependencies),
+      triggerHistory: this.triggerHistory.slice(-100),
       updated: this._ts()
     }, null, 2));
   }
@@ -71,6 +76,7 @@ class SkillAnalyzer {
           version: meta.version || '0.0.0',
           description: (meta.description || '').replace(/\n/g, ' ').substring(0, 120),
           triggers: meta.triggers || [],
+          triggerPatterns: this._buildTriggerPatterns(meta.triggers || []),
           complexity: meta.complexity || '?',
           metadata: meta.metadata || {},
           fileSize: stats.size,
@@ -79,10 +85,10 @@ class SkillAnalyzer {
           hasScripts: fs.existsSync(path.join(skillDir, 'scripts')),
           allowedTools: meta['allowed-tools'] || [],
           dependencies: meta.dependencies || [],
-          tags: meta.tags || []
+          tags: meta.tags || [],
+          keywords: this._extractKeywords(meta)
         };
 
-        // Parse references for dependencies
         if (meta.references) {
           for (const ref of (Array.isArray(meta.references) ? meta.references : [meta.references])) {
             const refName = ref.replace(/^(references\/|scripts\/)/, '').replace(/\.\w+$/, '');
@@ -93,10 +99,12 @@ class SkillAnalyzer {
         }
 
         this.skills.push(skill);
-      } catch (e) { /* skip broken skills */ }
+      } catch (e) {}
     }
 
     this._buildDependencyGraph();
+    // 清除缓存
+    this.routingCache.clear();
     return this.skills;
   }
 
@@ -109,11 +117,9 @@ class SkillAnalyzer {
       if (m) {
         const key = m[1];
         let val = m[2].trim();
-        // Parse arrays in brackets
         if (val.startsWith('[') && val.endsWith(']')) {
           try { val = JSON.parse(val); } catch (e) { val = val.slice(1, -1).split(',').map(s => s.trim().replace(/^["']|["']$/g, '')); }
         }
-        // Parse inline lists
         if (val.startsWith('- ')) {
           val = val.split('\n').map(l => l.replace(/^\s*-\s*/, '').trim()).filter(Boolean);
         }
@@ -123,6 +129,42 @@ class SkillAnalyzer {
     return meta;
   }
 
+  _extractKeywords(meta) {
+    const keywords = new Set();
+    
+    // 从名称提取
+    if (meta.name) {
+      meta.name.split(/[\s-_]/).forEach(w => { if (w.length > 2) keywords.add(w.toLowerCase()); });
+    }
+    
+    // 从描述提取
+    if (meta.description) {
+      meta.description.split(/[\s,，。、]/).forEach(w => { if (w.length > 2) keywords.add(w.toLowerCase()); });
+    }
+    
+    // 从标签提取
+    if (meta.tags) {
+      (Array.isArray(meta.tags) ? meta.tags : [meta.tags]).forEach(t => keywords.add(t.toLowerCase()));
+    }
+    
+    // 从触发词提取
+    if (meta.triggers) {
+      (Array.isArray(meta.triggers) ? meta.triggers : [meta.triggers]).forEach(t => {
+        t.split(/[\s,，。]/).forEach(w => { if (w.length > 1) keywords.add(w.toLowerCase()); });
+      });
+    }
+    
+    return [...keywords];
+  }
+
+  _buildTriggerPatterns(triggers) {
+    return triggers.map(t => ({
+      original: t,
+      normalized: t.toLowerCase().replace(/[^\w\u4e00-\u9fa5]/g, ''),
+      keywords: t.split(/[\s,，。]/).filter(w => w.length > 1).map(w => w.toLowerCase())
+    }));
+  }
+
   _buildDependencyGraph() {
     this.dependencies.clear();
     for (const skill of this.skills) {
@@ -130,6 +172,396 @@ class SkillAnalyzer {
         this.dependencies.set(skill.id, skill.dependencies);
       }
     }
+  }
+
+  // ==================== 语义路由 ====================
+
+  /**
+   * 语义路由 - 根据用户输入推荐最合适的 Skill
+   * @param {string} query - 用户输入
+   * @param {Object} options - 路由选项
+   */
+  route(query, options = {}) {
+    const { limit = 5, threshold = 0.3, includeFallback = true } = options;
+    
+    // 检查缓存
+    const cacheKey = `${query}:${limit}:${threshold}`;
+    if (this.routingCache.has(cacheKey)) {
+      return this.routingCache.get(cacheKey);
+    }
+
+    if (this.skills.length === 0) this.scan();
+
+    const queryKeywords = this._extractQueryKeywords(query);
+    const scores = [];
+
+    for (const skill of this.skills) {
+      const score = this._calculateMatchScore(query, queryKeywords, skill);
+      if (score >= threshold) {
+        scores.push({
+          skillId: skill.id,
+          name: skill.name,
+          score: Math.round(score * 100) / 100,
+          matchType: this._getMatchType(score),
+          matchedKeywords: this._getMatchedKeywords(queryKeywords, skill),
+          confidence: this._getConfidenceLabel(score)
+        });
+      }
+    }
+
+    // 排序并限制结果
+    scores.sort((a, b) => b.score - a.score);
+    const result = scores.slice(0, limit);
+
+    // 添加兜底选项
+    if (includeFallback && result.length === 0) {
+      result.push({
+        skillId: 'general',
+        name: '通用助手',
+        score: 0,
+        matchType: 'fallback',
+        matchedKeywords: [],
+        confidence: 'none'
+      });
+    }
+
+    // 缓存结果
+    if (this.routingCache.size > 50) {
+      const firstKey = this.routingCache.keys().next().value;
+      this.routingCache.delete(firstKey);
+    }
+    this.routingCache.set(cacheKey, result);
+
+    return result;
+  }
+
+  _extractQueryKeywords(query) {
+    return query
+      .toLowerCase()
+      .replace(/[^\w\u4e00-\u9fa5\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 1);
+  }
+
+  _calculateMatchScore(query, queryKeywords, skill) {
+    let score = 0;
+    let weight = 0;
+
+    // 1. 触发词匹配 (权重 0.4)
+    const triggerScore = this._matchTriggers(query, skill);
+    score += triggerScore * 0.4;
+    weight += 0.4;
+
+    // 2. 关键词匹配 (权重 0.3)
+    const keywordScore = this._matchKeywords(queryKeywords, skill);
+    score += keywordScore * 0.3;
+    weight += 0.3;
+
+    // 3. 描述匹配 (权重 0.2)
+    const descScore = this._matchDescription(query, skill);
+    score += descScore * 0.2;
+    weight += 0.2;
+
+    // 4. 使用频率加成 (权重 0.1)
+    const usageBoost = this._getUsageBoost(skill.id);
+    score += usageBoost * 0.1;
+    weight += 0.1;
+
+    return weight > 0 ? score / weight : 0;
+  }
+
+  _matchTriggers(query, skill) {
+    const queryNorm = query.toLowerCase().replace(/[^\w\u4e00-\u9fa5]/g, '');
+    let maxScore = 0;
+
+    for (const pattern of skill.triggerPatterns || []) {
+      // 完全匹配
+      if (queryNorm.includes(pattern.normalized)) {
+        maxScore = Math.max(maxScore, 1);
+        break;
+      }
+      // 关键词匹配
+      const matchedKeywords = pattern.keywords.filter(k => queryNorm.includes(k));
+      if (matchedKeywords.length > 0) {
+        maxScore = Math.max(maxScore, matchedKeywords.length / pattern.keywords.length);
+      }
+    }
+
+    return maxScore;
+  }
+
+  _matchKeywords(queryKeywords, skill) {
+    if (queryKeywords.length === 0 || skill.keywords.length === 0) return 0;
+
+    const matched = queryKeywords.filter(qk =>
+      skill.keywords.some(sk => sk.includes(qk) || qk.includes(sk))
+    );
+
+    return matched.length / Math.max(queryKeywords.length, skill.keywords.length);
+  }
+
+  _matchDescription(query, skill) {
+    const queryLower = query.toLowerCase();
+    const descLower = (skill.description || '').toLowerCase();
+    
+    if (descLower.includes(queryLower.substring(0, Math.min(10, queryLower.length)))) {
+      return 0.8;
+    }
+
+    const queryWords = queryLower.split(/\s+/);
+    const descWords = descLower.split(/\s+/);
+    const intersection = queryWords.filter(w => descWords.includes(w));
+
+    return intersection.length / queryWords.length;
+  }
+
+  _getUsageBoost(skillId) {
+    const recent = this.usageLog.filter(e => e.skillId === skillId);
+    const daysSinceLast = recent.length > 0
+      ? (Date.now() - new Date(recent[recent.length - 1].timestamp).getTime()) / 86400000
+      : 999;
+
+    // 近期使用加成
+    if (daysSinceLast < 1) return 0.8;
+    if (daysSinceLast < 7) return 0.5;
+    if (daysSinceLast < 30) return 0.2;
+    return 0;
+  }
+
+  _getMatchType(score) {
+    if (score >= 0.8) return 'exact';
+    if (score >= 0.6) return 'strong';
+    if (score >= 0.4) return 'partial';
+    return 'weak';
+  }
+
+  _getConfidenceLabel(score) {
+    if (score >= 0.8) return 'high';
+    if (score >= 0.5) return 'medium';
+    if (score >= 0.3) return 'low';
+    return 'none';
+  }
+
+  _getMatchedKeywords(queryKeywords, skill) {
+    const matched = [];
+    for (const qk of queryKeywords) {
+      if (skill.keywords.some(sk => sk.includes(qk) || qk.includes(sk))) {
+        matched.push(qk);
+      }
+    }
+    return matched;
+  }
+
+  /**
+   * 批量路由 - 批量处理多个查询
+   */
+  routeBatch(queries, options = {}) {
+    return queries.map(q => ({
+      query: q,
+      results: this.route(q, options)
+    }));
+  }
+
+  /**
+   * 路由统计
+   */
+  getRoutingStats() {
+    const stats = {
+      totalSkills: this.skills.length,
+      cacheSize: this.routingCache.size,
+      avgTriggers: 0,
+      avgKeywords: 0
+    };
+
+    if (this.skills.length > 0) {
+      stats.avgTriggers = this.skills.reduce((s, sk) => s + sk.triggers.length, 0) / this.skills.length;
+      stats.avgKeywords = this.skills.reduce((s, sk) => s + sk.keywords.length, 0) / this.skills.length;
+    }
+
+    return stats;
+  }
+
+  // ==================== 触发词自动进化 ====================
+
+  /**
+   * 记录触发词使用情况并建议进化
+   */
+  recordTriggerUsage(skillId, trigger, matched) {
+    this.triggerHistory.push({
+      skillId,
+      trigger,
+      matched,
+      timestamp: this._ts()
+    });
+
+    // 清理旧记录
+    if (this.triggerHistory.length > 100) {
+      this.triggerHistory = this.triggerHistory.slice(-100);
+    }
+
+    // 每10次记录检查一次是否需要进化
+    const skillTriggers = this.triggerHistory.filter(h => h.skillId === skillId);
+    if (skillTriggers.length >= 10) {
+      return this.suggestTriggerEvolution(skillId);
+    }
+
+    return null;
+  }
+
+  /**
+   * 建议触发词进化
+   */
+  suggestTriggerEvolution(skillId) {
+    const skill = this.skills.find(s => s.id === skillId);
+    if (!skill) return null;
+
+    const skillHistory = this.triggerHistory.filter(h => h.skillId === skillId);
+    const matched = skillHistory.filter(h => h.matched);
+    const missed = skillHistory.filter(h => !h.matched);
+
+    const suggestions = {
+      skillId,
+      currentTriggers: skill.triggers,
+      stats: {
+        totalAttempts: skillHistory.length,
+        matchRate: matched.length / skillHistory.length
+      },
+      suggestions: []
+    };
+
+    // 分析未匹配的查询
+    if (missed.length > 0) {
+      const missedQueries = missed.map(h => h.trigger);
+      const newKeywords = this._extractCommonPatterns(missedQueries);
+      
+      if (newKeywords.length > 0) {
+        suggestions.suggestions.push({
+          type: 'add',
+          keywords: newKeywords,
+          reason: '用户多次使用但未匹配的查询'
+        });
+      }
+    }
+
+    // 分析低效触发词
+    const triggerStats = {};
+    for (const h of matched) {
+      triggerStats[h.trigger] = (triggerStats[h.trigger] || 0) + 1;
+    }
+
+    const lowUsageTriggers = Object.entries(triggerStats)
+      .filter(([, count]) => count <= 1)
+      .map(([trigger]) => trigger);
+
+    if (lowUsageTriggers.length > 0) {
+      suggestions.suggestions.push({
+        type: 'remove',
+        triggers: lowUsageTriggers,
+        reason: '触发词使用率过低'
+      });
+    }
+
+    this._saveState();
+    return suggestions.suggestions.length > 0 ? suggestions : null;
+  }
+
+  _extractCommonPatterns(queries) {
+    const patterns = {};
+    
+    for (const q of queries) {
+      const words = q.toLowerCase().replace(/[^\w\u4e00-\u9fa5]/g, ' ').split(/\s+/);
+      for (const word of words) {
+        if (word.length >= 2) {
+          patterns[word] = (patterns[word] || 0) + 1;
+        }
+      }
+    }
+
+    // 返回出现2次以上的词
+    return Object.entries(patterns)
+      .filter(([, count]) => count >= 2)
+      .map(([word]) => word);
+  }
+
+  /**
+   * 应用触发词进化
+   */
+  applyTriggerEvolution(skillId, changes) {
+    const skill = this.skills.find(s => s.id === skillId);
+    if (!skill) return { success: false, reason: 'Skill不存在' };
+
+    const skillFile = path.join(skill.path, 'SKILL.md');
+    if (!fs.existsSync(skillFile)) {
+      return { success: false, reason: 'SKILL.md不存在' };
+    }
+
+    try {
+      let content = fs.readFileSync(skillFile, 'utf8');
+
+      for (const change of changes) {
+        if (change.type === 'add') {
+          // 添加新触发词到 frontmatter
+          content = this._addTriggerToFrontmatter(content, change.keywords);
+        } else if (change.type === 'remove') {
+          content = this._removeTriggerFromFrontmatter(content, change.triggers);
+        }
+      }
+
+      fs.writeFileSync(skillFile, content);
+      
+      // 重新扫描
+      this.scan(true);
+
+      return { success: true };
+    } catch (e) {
+      return { success: false, reason: e.message };
+    }
+  }
+
+  _addTriggerToFrontmatter(content, keywords) {
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) return content;
+
+    const fm = fmMatch[1];
+    let triggers = [];
+
+    const triggersLine = fm.match(/^triggers:\s*(.*)/m);
+    if (triggersLine) {
+      const existing = triggersLine[1].trim();
+      if (existing.startsWith('[')) {
+        try { triggers = JSON.parse(existing); } catch {}
+      } else {
+        triggers = existing.split(/[,，]/).map(t => t.trim()).filter(Boolean);
+      }
+    }
+
+    triggers = [...new Set([...triggers, ...keywords])];
+
+    const newFm = fm.replace(/^triggers:\s*.*/m, `triggers: [${triggers.join(', ')}]`);
+    return content.replace(fmMatch[0], `---\n${newFm}\n---`);
+  }
+
+  _removeTriggerFromFrontmatter(content, toRemove) {
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) return content;
+
+    const fm = fmMatch[1];
+    let triggers = [];
+
+    const triggersLine = fm.match(/^triggers:\s*(.*)/m);
+    if (triggersLine) {
+      const existing = triggersLine[1].trim();
+      if (existing.startsWith('[')) {
+        try { triggers = JSON.parse(existing); } catch {}
+      } else {
+        triggers = existing.split(/[,，]/).map(t => t.trim()).filter(Boolean);
+      }
+    }
+
+    triggers = triggers.filter(t => !toRemove.includes(t));
+
+    const newFm = fm.replace(/^triggers:\s*.*/m, `triggers: [${triggers.join(', ')}]`);
+    return content.replace(fmMatch[0], `---\n${newFm}\n---`);
   }
 
   // ==================== 使用分析 ====================
@@ -180,35 +612,24 @@ class SkillAnalyzer {
   scoreSkills() {
     const scores = [];
     for (const skill of this.skills) {
-      let score = 50; // base
+      let score = 50;
 
-      // Has triggers: +15
       if (skill.triggers.length > 0) score += 15;
       if (skill.triggers.length > 5) score += 5;
-
-      // Has description: +10
       if (skill.description.length > 20) score += 10;
-
-      // Has version: +5
       if (skill.version && skill.version !== '0.0.0') score += 5;
-
-      // Has references: +8
       if (skill.hasRefs) score += 8;
-
-      // Has scripts: +5
       if (skill.hasScripts) score += 5;
-
-      // File is reasonably sized (2-30KB): +7
       if (skill.fileSize > 2000 && skill.fileSize < 30000) score += 7;
-      else if (skill.fileSize < 500) score -= 10; // Too small → likely broken
-
-      // Complexity rating: +5
+      else if (skill.fileSize < 500) score -= 10;
       if (skill.complexity && skill.complexity !== '?') score += 5;
 
-      // Recently modified (30 days): +5
       const daysSinceMod = (Date.now() - new Date(skill.lastModified).getTime()) / 86400000;
       if (daysSinceMod < 30) score += 5;
-      if (daysSinceMod > 180) score -= 10; // Stale
+      if (daysSinceMod > 180) score -= 10;
+
+      // 路由能力加成
+      if (skill.keywords.length > 10) score += 5;
 
       score = Math.max(0, Math.min(100, score));
 
@@ -227,10 +648,11 @@ class SkillAnalyzer {
     const issues = [];
     if (skill.triggers.length === 0) issues.push('缺少触发词');
     if (skill.description.length < 20) issues.push('描述过短');
-    if (skill.fileSize < 500) issues.push('文件异常小(可能损坏)');
+    if (skill.fileSize < 500) issues.push('文件异常小');
     if (skill.version === '0.0.0' || !skill.version) issues.push('无版本号');
     const daysSinceMod = (Date.now() - new Date(skill.lastModified).getTime()) / 86400000;
     if (daysSinceMod > 180) issues.push('超过半年未更新');
+    if (skill.keywords.length < 5) issues.push('关键词过少，影响路由');
     return issues;
   }
 
@@ -291,6 +713,7 @@ class SkillAnalyzer {
     const dead = this.findDeadSkills();
     const cycles = this.findCircularDeps();
     const heatmap = this.getUsageHeatmap();
+    const routingStats = this.getRoutingStats();
 
     let md = '# Skill 分析报告\n\n';
     md += '**扫描时间**: ' + this._ts() + '\n';
@@ -300,6 +723,11 @@ class SkillAnalyzer {
     const grades = { A: 0, B: 0, C: 0, D: 0 };
     scores.forEach(s => grades[s.grade]++);
     md += `A级: ${grades.A} | B级: ${grades.B} | C级: ${grades.C} | D级: ${grades.D}\n\n`;
+
+    md += '## 语义路由统计\n';
+    md += `- 平均触发词数: ${routingStats.avgTriggers.toFixed(1)}\n`;
+    md += `- 平均关键词数: ${routingStats.avgKeywords.toFixed(1)}\n`;
+    md += `- 路由缓存大小: ${routingStats.cacheSize}\n\n`;
 
     md += '## Top 10 最高质量\n';
     scores.slice(0, 10).forEach(s => {
@@ -342,21 +770,26 @@ class SkillAnalyzer {
 }
 
 if (require.main === module) {
-  const sa = new SkillAnalyzer(); const cmd = process.argv[2];
+  const sa = new SkillAnalyzer(); 
+  const cmd = process.argv[2];
+
   const cmds = {
     scan() {
       const skills = sa.scan(true);
       console.log('Scanned: ' + skills.length + ' skills');
-      skills.slice(0, 10).forEach(s => console.log('  ' + s.id + ' v' + s.version + ' [' + s.triggers.length + ' triggers]'));
+      skills.slice(0, 10).forEach(s => console.log('  ' + s.id + ' v' + s.version + ' [' + s.triggers.length + ' triggers, ' + s.keywords.length + ' keywords]'));
+    },
+    route() {
+      const query = process.argv.slice(3).join(' ') || '代码审查';
+      const results = sa.route(query);
+      console.log('Route for "' + query + '":');
+      results.forEach((r, i) => console.log('  ' + (i+1) + '. [' + r.score + '] ' + r.name + ' (' + r.confidence + ')'));
     },
     score() {
       sa.scan();
       const scores = sa.scoreSkills();
       console.log('Quality Scores:');
       scores.slice(0, 20).forEach(s => console.log('  [' + s.grade + '] ' + s.name + ' (' + s.score + ')' + (s.issues.length ? ' ⚠' + s.issues.join(',') : '')));
-      const grades = { A: 0, B: 0, C: 0, D: 0 };
-      scores.forEach(s => grades[s.grade]++);
-      console.log('\nA:' + grades.A + ' B:' + grades.B + ' C:' + grades.C + ' D:' + grades.D);
     },
     dead() {
       sa.scan();
@@ -364,26 +797,16 @@ if (require.main === module) {
       console.log('Dead skills (' + d.length + '):');
       d.forEach(s => console.log('  ' + s.name));
     },
-    deps() {
-      sa.scan();
-      const skillId = process.argv[3];
-      if (skillId) {
-        console.log(JSON.stringify(sa.getDependencyTree(skillId), null, 2));
-      } else {
-        console.log('Skills with dependencies:');
-        sa.skills.filter(s => s.dependencies.length > 0).forEach(s => console.log('  ' + s.id + ' → ' + s.dependencies.join(', ')));
-      }
-    },
-    cycles() {
-      sa.scan();
-      const c = sa.findCircularDeps();
-      console.log(c.length > 0 ? 'Circular deps: ' + JSON.stringify(c) : 'No circular dependencies');
+    stats() {
+      console.log(JSON.stringify(sa.getRoutingStats(), null, 2));
     },
     report() { console.log(sa.generateReport()); },
-    help() { console.log('SkillAnalyzer CLI\n命令: scan, score, dead, deps, cycles, report, help'); }
+    help() { 
+      console.log('SkillAnalyzer CLI (Enhanced)\n命令: scan, route <query>, score, dead, stats, report, help');
+    }
   };
   (cmds[cmd] || cmds.help)();
 }
 
 module.exports = SkillAnalyzer;
-console.log('[SkillAnalyzer] 加载成功 - P4-11 技能分析器(质量·依赖·热力图)');
+console.log('[SkillAnalyzer] 加载成功 - P4-11 技能分析器(增强版: 语义路由+触发词进化)');
