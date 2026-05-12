@@ -29,15 +29,16 @@ Design constraints:
 from __future__ import annotations
 
 import errno
-import fcntl
 import os
 import select
 import signal
 import struct
 import sys
-import termios
 import time
-from typing import Optional, Sequence
+
+if sys.platform != "win32":
+    import fcntl
+    import termios
 
 try:
     import ptyprocess  # type: ignore

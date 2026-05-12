@@ -2490,6 +2490,11 @@ class HermesCLI:
         self.agent: Optional[AIAgent] = None
         self._app = None  # prompt_toolkit Application (set in run())
         
+        # ── P0-2: Token Budget Manager ────────────────────────────────────
+        # Phase 2: 集成 TokenBudgetManager 到 CLI
+        self._token_budget_manager = None
+        self._init_token_budget_manager()
+        
         # Conversation state
         self.conversation_history: List[Dict[str, Any]] = []
         self.session_start = datetime.now()
@@ -2760,6 +2765,178 @@ class HermesCLI:
         emoji = "⏱" if live else "⏲"
         return f"{emoji} {time_str}"
 
+    # ── P0-2: Token Budget Manager ──────────────────────────────────────────
+    
+    def _init_token_budget_manager(self) -> None:
+        """初始化 TokenBudgetManager (Phase 2)"""
+        try:
+            from agent.token_budget_manager import TokenBudgetManager, BudgetThresholds
+            import yaml
+            from pathlib import Path
+            
+            # 加载 token_budget 配置
+            hermes_dir = Path.home() / ".hermes"
+            tb_config_path = hermes_dir / "token_budget.yaml"
+            
+            tb_config = {}
+            if tb_config_path.exists():
+                with open(tb_config_path, 'r', encoding='utf-8') as f:
+                    tb_config = yaml.safe_load(f) or {}
+            
+            # 从 HERMES 主配置获取上下文长度和 max_tokens
+            context_length = CLI_CONFIG.get('model_context_length', 16384)
+            max_tokens = CLI_CONFIG.get('model_max_tokens', 4096)
+            
+            # 从 token_budget 配置覆盖
+            if tb_config.get('context_length_override'):
+                context_length = tb_config['context_length_override']
+            if tb_config.get('output_budget_override'):
+                max_tokens = tb_config['output_budget_override']
+            
+            # 创建阈值
+            thresholds = BudgetThresholds(
+                context_warning=tb_config.get('context_warning', 70.0),
+                context_danger=tb_config.get('context_danger', 85.0),
+                context_critical=tb_config.get('context_critical', 92.0),
+                output_warning=tb_config.get('output_warning', 60.0),
+                output_danger=tb_config.get('output_danger', 80.0),
+                output_critical=tb_config.get('output_critical', 95.0),
+                min_output_reserve=tb_config.get('min_output_reserve', 500)
+            )
+            
+            # 确定模式
+            mode = tb_config.get('token_budget_mode', 'observe')
+            
+            # 创建管理器
+            self._token_budget_manager = TokenBudgetManager(
+                mode=mode,
+                context_limit=context_length,
+                output_budget=max_tokens,
+                thresholds=thresholds,
+                model_name=self.model or "unknown"
+            )
+            
+            # 初始化压缩触发标志
+            self._compression_triggered = False
+            
+            # 日志输出（仅 verbose 模式）
+            if self.verbose:
+                self._console_print(
+                    f"[dim]TokenBudgetManager initialized: mode={mode}, "
+                    f"context={context_length}, output={max_tokens}[/dim]"
+                )
+                
+        except ImportError as e:
+            # token_budget_manager 模块不存在，静默跳过
+            self._token_budget_manager = None
+            if self.verbose:
+                self._console_print(
+                    f"[dim]TokenBudgetManager not available: {e}[/dim]"
+                )
+        except Exception as e:
+            self._token_budget_manager = None
+            logger.warning("Failed to initialize TokenBudgetManager: %s", e)
+    
+    def _update_token_budget_manager(self) -> None:
+        """更新 TokenBudgetManager 状态（在 agent 初始化后调用）"""
+        if not self._token_budget_manager:
+            return
+        
+        try:
+            agent = getattr(self, 'agent', None)
+            if not agent:
+                return
+            
+            # 更新上下文限制
+            compressor = getattr(agent, 'context_compressor', None)
+            if compressor:
+                ctx_len = getattr(compressor, 'context_length', 0) or 0
+                if ctx_len > 0:
+                    self._token_budget_manager.context_limit = ctx_len
+            
+            # 更新模型名称
+            model_name = getattr(agent, 'model', None) or self.model
+            if model_name:
+                self._token_budget_manager.model_name = model_name
+                
+        except Exception as e:
+            logger.warning("Failed to update TokenBudgetManager: %s", e)
+    
+    def _sample_token_budget(self) -> None:
+        """采样当前 token 使用情况（每次状态更新时调用）"""
+        if not self._token_budget_manager:
+            return
+        
+        try:
+            snapshot = self._get_status_bar_snapshot()
+            
+            context_tokens = snapshot.get('context_tokens', 0)
+            output_used = snapshot.get('session_output_tokens', 0)
+            
+            # 采样
+            tb_snapshot = self._token_budget_manager.sample(
+                context_tokens=context_tokens,
+                output_used=output_used
+            )
+            
+            # 检查阈值并输出警告
+            alert = self._token_budget_manager.check_thresholds(tb_snapshot)
+            if alert:
+                self._token_budget_manager.alert(alert)
+                
+            # adaptive 模式下动态调整
+            if self._token_budget_manager.mode == 'adaptive':
+                new_budget = self._token_budget_manager.calculate_output_budget(tb_snapshot)
+                # 将调整后的预算传递给 agent（如果需要）
+                # 目前仅记录，实际使用在模型调用时
+            
+            # Phase 3: intervene 模式下检查是否触发自动压缩
+            if self._token_budget_manager.mode == 'intervene':
+                if not self._compression_triggered:
+                    if self._token_budget_manager.should_trigger_compression(tb_snapshot):
+                        self._token_budget_manager._trigger_compression(tb_snapshot)
+                        self._compression_triggered = True
+                        # 自动触发压缩
+                        print("🔴 TokenBudgetManager: Auto-compressing context...")
+                        self._manual_compress("")
+                else:
+                    # 重置标志：如果上下文使用率下降到安全水平
+                    if tb_snapshot.context_percent < self._token_budget_manager.thresholds.context_danger:
+                        self._compression_triggered = False
+                
+        except Exception as e:
+            logger.debug("TokenBudgetManager sample failed: %s", e)
+    
+    def _get_effective_max_tokens(self) -> Optional[int]:
+        """
+        获取有效的 max_tokens（Phase 2: adaptive 模式）
+        
+        Returns:
+            调整后的 max_tokens，或 None（使用默认值）
+        """
+        if not self._token_budget_manager:
+            return None
+        
+        if self._token_budget_manager.mode != 'adaptive':
+            return None
+        
+        try:
+            snapshot = self._get_status_bar_snapshot()
+            context_tokens = snapshot.get('context_tokens', 0)
+            output_used = snapshot.get('session_output_tokens', 0)
+            
+            tb_snapshot = self._token_budget_manager.sample(
+                context_tokens=context_tokens,
+                output_used=output_used
+            )
+            
+            return self._token_budget_manager.calculate_output_budget(tb_snapshot)
+            
+        except Exception:
+            return None
+    
+    # ── Status Bar ────────────────────────────────────────────────────────
+    
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -3030,6 +3207,10 @@ class HermesCLI:
             return []
         try:
             snapshot = self._get_status_bar_snapshot()
+            
+            # ── P0-2: Sample token budget on every status bar update ─────────
+            self._sample_token_budget()
+            
             # Use prompt_toolkit's own terminal width when running inside the
             # TUI — shutil.get_terminal_size() can return stale or fallback
             # values (especially on SSH) that differ from what prompt_toolkit
@@ -3880,6 +4061,8 @@ class HermesCLI:
         toggled `/fast` on and the current model supports Priority
         Processing / Anthropic fast mode, attach `request_overrides` so the
         API call is marked accordingly.
+        
+        Phase 2: If TokenBudgetManager is in adaptive mode, attach dynamic max_tokens.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -3915,12 +4098,23 @@ class HermesCLI:
         except Exception:
             overrides = None
         route["request_overrides"] = overrides
+        
+        # Phase 2: Add dynamic max_tokens for adaptive mode
+        if self._token_budget_manager:
+            dynamic_max_tokens = self._get_effective_max_tokens()
+            if dynamic_max_tokens is not None:
+                route["max_tokens"] = dynamic_max_tokens
+                if self.verbose:
+                    logger.debug(f"TokenBudgetManager: adaptive max_tokens={dynamic_max_tokens}")
+        
         return route
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None, max_tokens_override: int | None = None) -> bool:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
+        
+        Phase 2: Supports max_tokens_override for TokenBudgetManager adaptive mode.
         
         Returns:
             bool: True if successful, False otherwise
@@ -4005,6 +4199,8 @@ class HermesCLI:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+            # Use max_tokens_override if provided (Phase 2: adaptive mode), otherwise use config default
+            effective_max_tokens = max_tokens_override if max_tokens_override is not None else None
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
@@ -4024,6 +4220,7 @@ class HermesCLI:
                 reasoning_config=self.reasoning_config,
                 service_tier=self.service_tier,
                 request_overrides=request_overrides,
+                max_tokens=effective_max_tokens,  # Phase 2: adaptive token budget
                 providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore,
                 providers_order=self._providers_order,
@@ -4066,6 +4263,9 @@ class HermesCLI:
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),
             )
+            
+            # ── P0-2: Update TokenBudgetManager after agent init ────────────
+            self._update_token_budget_manager()
 
             # Force-create DB row on /title intent, then apply title.
             if self._pending_title and self._session_db and self.agent:
@@ -10013,6 +10213,7 @@ class HermesCLI:
             model_override=turn_route["model"],
             runtime_override=turn_route["runtime"],
             request_overrides=turn_route.get("request_overrides"),
+            max_tokens_override=turn_route.get("max_tokens"),
         ):
             return None
         
