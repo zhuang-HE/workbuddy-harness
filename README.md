@@ -1,6 +1,6 @@
-# WorkBuddy Harness v3.2
+# WorkBuddy Harness v3.3
 
-> 🏗️ AI Agent 九维基础设施框架 — 成熟度 55% → 95%
+> 🏗️ AI Agent 九维基础设施框架 — 成熟度 55% → 97%
 
 ## 简介
 
@@ -58,14 +58,14 @@ WorkBuddy Harness 将 Agent 工程化需求归纳为 9 个维度，并为每个�
 │  D1 身份层 ──── context-awareness (90%)                           │
 │  │  环境感知·项目检测·时间感知·对话追踪·动态策略调整                  │
 │  │                                                                │
-│  D2 记忆层 ──── memory-decay (90%)                                │
-│  │  指数衰减模型·五级重要性管理·自适应压缩·上下文Token优化           │
+│  D2 记忆层 ──── memory-decay + memory-git (95%)                   │
+│  │  指数衰减·四层压缩(v2)·Git版本控制·历史回滚                        │
 │  │                                                                │
 │  D3 技能层 ──── 53+ Skills + 语义路由 + 触发词自进化 (90%)         │
 │  │  Code Review · Deep Research · Stock Analyst · 保险产品开发...  │
 │  │                                                                │
-│  D4 学习层 ──── learning-loop (90%)                               │
-│  │  OBSERVE→ANALYZE→LEARN→EVOLVE→APPLY 五阶段自动闭环              │
+│  D4 学习层 ──── learning-loop v1.1 (95%)                           │
+│  │  五阶段闭环·D4+D3联合闭环·本能导出·自动化进化                     │
 │  │                                                                │
 │  D5 调度层 ──── task-orchestrator (88%)                           │
 │  │  目标分解·DAG依赖图·WorkerPool·PriorityQueue·指数退避重试        │
@@ -73,8 +73,8 @@ WorkBuddy Harness 将 Agent 工程化需求归纳为 9 个维度，并为每个�
 │  D6 融合层 ──── fusion-router + fusion-sync-enhancer (85%)        │
 │  │  11领域智能路由(10/10准确)·双向增量同步·5种冲突策略·健康监控      │
 │  │                                                                │
-│  D7 安全层 ──── runtime-guardian (85%)                            │
-│  │  12种危险模式·文件黑名单·频率异常·observe/enforce/adaptive 三模式 │
+│  D7 安全层 ──── runtime-guardian v1.1 (88%)                        │
+│  │  29种危险模式(P0×11/P1×12/P2×6)·文件黑名单·三模式(observe/enforce/adaptive)     │
 │  │                                                                │
 │  D8 评测层 ──── eval-framework (100%)                              │
 │  │  五维评测·30基准用例·A/B对比·回归检测·RuntimeEvalTracker·真实数据收集         │
@@ -286,20 +286,21 @@ eval-framework 汇总：
 | P4-1 | `task-orchestrator` | D5 调度 | 636 | 目标分解·DAG依赖·WorkerPool(4workers)·PriorityQueue·指数退避重试 |
 | P4-2 | `eval-framework` | D8 评测 | 600+ | 五维评测·RuntimeEvalTracker真实数据收集·A/B测试·回归检测·30基准用例 |
 | P4-3 | `multi-agent-orchestrator` | D9 协作 | 800+ | 10团队模板·9角色(三省六部)·能力矩阵匹配·智能降级·消息优先级队列 |
-| P4-4 | `runtime-guardian` | D7 安全 | 785 | 12危险模式·文件黑名单·频率异常·三模式(observe/enforce/adaptive) |
+| P4-4 | `runtime-guardian` | D7 安全 | 800+ | 29危险模式(P0×11/P1×12/P2×6)·文件黑名单·三模式·分类标签 |
 | P4-5 | `context-awareness` | D1 身份 | 389 | 四维感知(环境/项目/时间/对话)·动态策略·深夜简洁模式·长会话提示 |
-| P4-6 | `memory-decay` | D2 记忆 | 520 | 指数衰减·五级重要性(CRITICAL→TRANSIENT)·自适应压缩·Token优化 |
+| P4-6 | `memory-decay` | D2 记忆 | 620 | 指数衰减·五级重要性·四层压缩(v2)·Token预算控制 |
 | P4-7 | `fusion-sync-enhancer` | D6 融合 | 320 | 双向增量同步·5种冲突策略·健康监控·上下文同步 |
-| P4-8 | `learning-loop` | D4 学习 | 180 | O→A→L→E→A闭环·模式提取·奖励计算·本能进化·自动建议 |
+| P4-8 | `learning-loop` | D4 学习 | 420 | O→A→L→E→A闭环·D4+D3联合闭环·本能导出·自动化进化 |
 | P4-9 | `fusion-router` | D6 融合 | 200 | 11领域规则·WB/HERMES/协作智能分发·10/10路由准确 |
 | P4-10 | `memory-graph` | D2 记忆 | 330 | 智能去重(>60%相似合并)·关系图谱(3种边)·主动召回·聚类分析 |
 | P4-11 | `skill-analyzer` | D3 技能 | 280 | 32技能质量评分·依赖DAG·循环检测·死技能标记·使用热力图 |
+| P4-12 | `memory-git` | D2 记忆 | 540 | Git版本控制·变更追踪·历史回滚·每日备份·差异对比 |
 
 ---
 
 ## 成熟度演变
 
-从最初 55%（2个维度完全空白）到 95%（全部 ≥85%）：
+从最初 55%（2个维度完全空白）到 97%（全部 ≥85%）：
 
 ```
 初始状态  55%  D1:80 D2:85 D3:90 D4:85 D5:40 D6:65 D7:50 D8:❌0 D9:❌0
@@ -309,11 +310,16 @@ Phase 5   88%  D1:90 D2:90 D3:90 D4:90 D5:88 D6:80 D7:85 D8:85 D9:85
 Phase 6   90%  D1:90 D2:90 D3:90 D4:90 D5:88 D6:85 D7:85 D8:85 D9:85
 Phase 7   93%  D1:90 D2:93 D3:93 D4:90 D5:88 D6:85 D7:85 D8:85 D9:85
 Phase 8   95%  D1:90 D2:93 D3:93 D4:90 D5:88 D6:85 D7:85 D8:100 D9:95
+Phase 9   97%  D1:90 D2:95 D3:90 D4:95 D5:88 D6:85 D7:88 D8:100 D9:95
 ```
 
-最大跨度提升：评测层（0%→100%）、多Agent（0%→95%）、记忆层（85%→93%）、技能层（90%→93%）。
+最大跨度提升：评测层（0%→100%）、多Agent（0%→95%）、记忆层（85%→95%）、学习层（85%→95%）。
 
-> 🏛️ **Phase 8 核心突破**：D8 评测层实现 100% 真实数据收集（RuntimeEvalTracker 全量接入）；D9 协作层引入**三省六部体系**，Agent 角色 7→9（新增 critic 批评者 + coordinator 协调员），团队模板 6→10（新增应急响应/CI/客服/高管团队），协作效率 +67%。
+> 🏛️ **Phase 9 核心突破**：
+> - D2 记忆层：新增 `memory-git` Git版本控制 + 四层压缩(v2)
+> - D4 学习层：新增 D4+D3联合闭环，本能自动导出
+> - D7 安全层：危险模式 12→29种（P0×11/P1×12/P2×6）
+> - 插件总数：11→12个
 
 ---
 

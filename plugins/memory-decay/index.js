@@ -371,7 +371,189 @@ class MemoryDecay {
     return md;
   }
 
-  // ==================== Priority Compression ====================
+  // ==================== 四层压缩系统 v2 ====================
+
+  /**
+   * 四层压缩引擎
+   * Layer 1: 滑动窗口 - 保留最近N轮对话
+   * Layer 2: 分层摘要 - 将旧内容压缩为摘要
+   * Layer 3: 重要性评分 - 基于衰减和类型打分
+   * Layer 4: Token预算 - 严格控制总Token
+   */
+  fourLayerCompression(messages, options = {}) {
+    const {
+      maxTokens = 8000,           // 最大Token预算
+      windowSize = 20,            // 滑动窗口大小
+      summaryThreshold = 30,      // 超过多少轮开始摘要
+      importanceThreshold = 2,    // 低于此重要性的被压缩
+      preserveRecent = 10          // 最近N条永不压缩
+    } = options;
+
+    // 估算Token（中文约1Token≈1.5字符，英文约4字符）
+    const estimateTokens = (text) => {
+      if (!text) return 0;
+      const chinese = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+      const english = (text.match(/[a-zA-Z]/g) || []).length;
+      return Math.ceil(chinese / 1.5 + english / 4 + (text.length - chinese - english));
+    };
+
+    const layers = {
+      sliding: { kept: [], dropped: 0 },
+      summary: { summarized: [], originalCount: 0 },
+      importance: { highPriority: [], lowPriority: [] },
+      tokenBudget: { final: [], totalTokens: 0, withinBudget: true }
+    };
+
+    // ===== Layer 1: 滑动窗口 =====
+    // 保留最近windowSize条消息
+    const recent = messages.slice(-windowSize);
+    const older = messages.slice(0, -windowSize);
+    layers.sliding.kept = recent;
+    layers.sliding.dropped = older.length;
+    layers.sliding.windowSize = windowSize;
+    layers.sliding.preservedRatio = Math.round(recent.length / messages.length * 100);
+
+    // ===== Layer 2: 分层摘要 =====
+    // 将older部分按时间段分组，每组生成摘要
+    const summaryGroups = [];
+    const groupSize = 10; // 每10条一组
+
+    for (let i = 0; i < older.length; i += groupSize) {
+      const group = older.slice(i, i + groupSize);
+      layers.summary.originalCount += group.length;
+
+      // 生成组摘要
+      const summaryContent = group.map(m => m.content).join(' | ');
+      const summaryTokens = estimateTokens(summaryContent);
+
+      // 如果单条消息超长，进一步压缩
+      let finalSummary = summaryContent;
+      if (summaryTokens > 500) {
+        finalSummary = this._generateAutoSummary(group);
+      }
+
+      summaryGroups.push({
+        index: Math.floor(i / groupSize),
+        content: finalSummary.substring(0, 300), // 限制摘要长度
+        originalCount: group.length,
+        topic: this._extractTopic(group)
+      });
+    }
+    layers.summary.groups = summaryGroups;
+    layers.summary.groupsCount = summaryGroups.length;
+
+    // ===== Layer 3: 重要性评分 =====
+    // 对所有保留项进行重要性评分
+    const allItems = [...layers.sliding.kept, ...layers.summary.groups.map(g => ({ content: g.content, _isSummary: true }))];
+
+    const scored = allItems.map((item, idx) => {
+      const baseScore = item.importance || 3;
+      const recencyBonus = idx >= allItems.length - preserveRecent ? 2 : 0;
+      const typeBonus = this.contentWeights[item.type] || 0.5;
+      const decayPenalty = item.decay ? (5 - item.decay.currentImportance) * 0.5 : 0;
+      const finalScore = baseScore + recencyBonus + typeBonus - decayPenalty;
+
+      return {
+        ...item,
+        _score: Math.max(1, Math.min(5, finalScore)),
+        _components: { base: baseScore, recency: recencyBonus, type: typeBonus.toFixed(2), decay: -decayPenalty.toFixed(2) }
+      };
+    });
+
+    layers.importance.scored = scored;
+    layers.importance.highPriority = scored.filter(s => s._score >= importanceThreshold + 2);
+    layers.importance.lowPriority = scored.filter(s => s._score < importanceThreshold + 2);
+    layers.importance.avgScore = scored.length > 0 ? (scored.reduce((sum, s) => sum + s._score, 0) / scored.length).toFixed(2) : 0;
+
+    // ===== Layer 4: Token预算控制 =====
+    let totalTokens = 0;
+    const final = [];
+
+    // 先放高优先级
+    for (const item of scored) {
+      if (item._score >= importanceThreshold + 2) {
+        const tokens = estimateTokens(item.content);
+        if (totalTokens + tokens <= maxTokens) {
+          final.push({ ...item, _tokens: tokens, _layer: 'high_priority' });
+          totalTokens += tokens;
+        } else if (tokens < maxTokens * 0.3) {
+          // 高优先级但超预算，截断保留
+          final.push({ ...item, content: item.content.substring(0, maxTokens * 3), _tokens: totalTokens, _layer: 'truncated' });
+          totalTokens = maxTokens;
+        }
+      }
+    }
+
+    // 再放摘要（按重要性排序）
+    const sortedSummaries = layers.summary.groups.sort((a, b) => b.originalCount - a.originalCount);
+    for (const summary of sortedSummaries) {
+      const tokens = estimateTokens(summary.content);
+      if (totalTokens + tokens <= maxTokens) {
+        final.push({ ...summary, _tokens: tokens, _layer: 'summary' });
+        totalTokens += tokens;
+      }
+    }
+
+    layers.tokenBudget.final = final;
+    layers.tokenBudget.totalTokens = totalTokens;
+    layers.tokenBudget.maxBudget = maxTokens;
+    layers.tokenBudget.withinBudget = totalTokens <= maxTokens;
+    layers.tokenBudget.usageRatio = Math.round(totalTokens / maxTokens * 100);
+
+    return {
+      originalCount: messages.length,
+      originalTokens: estimateTokens(messages.map(m => m.content).join('')),
+      layers,
+      finalContext: layers.tokenBudget.final.map(f => f.content || f),
+      stats: {
+        compressionRatio: Math.round(final.length / messages.length * 100),
+        tokenReduction: `${layers.tokenBudget.usageRatio}%`,
+        layersApplied: 4,
+        infoRetained: layers.sliding.preservedRatio + '% (recent) + ' + summaryGroups.length + ' summaries'
+      }
+    };
+  }
+
+  /**
+   * 自动生成摘要
+   */
+  _generateAutoSummary(messages) {
+    // 简单摘要：提取关键信息
+    const keyPhrases = [];
+    const topics = messages.map(m => m.content).join(' ');
+
+    // 提取被提及的技能
+    const skillMatches = topics.match(/skill[-:]?\s*(\w+)/gi);
+    if (skillMatches) keyPhrases.push(...skillMatches.slice(0, 3));
+
+    // 提取任务类型
+    const taskMatches = topics.match(/(code_review|debug|analysis|testing|refactor|docs?)/gi);
+    if (taskMatches) keyPhrases.push(...[...new Set(taskMatches)].slice(0, 2));
+
+    // 提取结果
+    const resultMatch = topics.match(/(完成|成功|失败|错误|修复|创建)/g);
+    if (resultMatch) keyPhrases.push(resultMatch[0]);
+
+    return keyPhrases.length > 0 ? `[摘要] ${keyPhrases.join(' · ')}` : '[摘要] 多轮对话';
+  }
+
+  /**
+   * 提取话题
+   */
+  _extractTopic(messages) {
+    const text = messages.map(m => m.content).join(' ');
+    const topics = [];
+
+    if (text.includes('代码') || text.includes('code')) topics.push('代码');
+    if (text.includes('测试') || text.includes('test')) topics.push('测试');
+    if (text.includes('文档') || text.includes('docs')) topics.push('文档');
+    if (text.includes('部署') || text.includes('deploy')) topics.push('部署');
+    if (text.includes('Bug') || text.includes('错误')) topics.push('调试');
+
+    return topics.length > 0 ? topics[0] : '一般';
+  }
+
+  // ==================== Priority Compression (Legacy) ====================
 
   compressContextBuffer(items, maxTokens) {
     const scored = items.map((item, i) => ({
@@ -506,6 +688,27 @@ Memory Decay - P4-6 记忆衰减管理器
         const result = md.compressContextBuffer(items, 100);
         console.log(`压缩: ${items.length} -> ${result.kept.length} (比例:${result.compressionRatio})`);
         console.log(`保留: ${result.kept.map(i => i.id).join(', ')}`);
+        break;
+      }
+      case 'compress4layer': {
+        // 测试四层压缩
+        const msgs = [];
+        for (let i = 0; i < 50; i++) {
+          msgs.push({
+            id: `msg_${i}`,
+            content: `这是第${i}条消息，内容涉及${i % 5 === 0 ? '代码' : i % 3 === 0 ? '测试' : '文档'}相关讨论`,
+            type: i % 5 === 0 ? 'technical_decision' : i % 3 === 0 ? 'conversation_detail' : 'casual_chat',
+            importance: i % 5 === 0 ? 4 : i % 3 === 0 ? 3 : 2,
+            turnsAgo: 50 - i
+          });
+        }
+        const r = md.fourLayerCompression(msgs, { maxTokens: 2000, windowSize: 20 });
+        console.log('四层压缩结果:');
+        console.log(`原始消息: ${r.originalCount}条`);
+        console.log(`压缩后: ${r.finalContext.length}项`);
+        console.log(`Token使用: ${r.stats.tokenReduction}`);
+        console.log(`压缩比: ${r.stats.compressionRatio}%`);
+        console.log('层级信息:', r.layers.sliding.preservedRatio + '% + ' + r.layers.summary.groupsCount + '个摘要');
         break;
       }
       default:

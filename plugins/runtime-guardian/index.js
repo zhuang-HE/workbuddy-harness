@@ -24,18 +24,40 @@ class RuntimeGuardian {
     this.Mode = { OBSERVE:'observe', ENFORCE:'enforce', ADAPTIVE:'adaptive' };
     
     this.DANGEROUS_COMMANDS = [
-      { pattern: /rm\s+-rf\s+\//, level: 'critical', desc: '删除根目录' },
-      { pattern: /curl.*\|.*(ba)?sh/, level: 'critical', desc: '远程脚本执行' },
-      { pattern: /mkfs\./, level: 'critical', desc: '格式化磁盘' },
-      { pattern: /dd\s+if=/, level: 'critical', desc: '磁盘操作' },
-      { pattern: /chmod\s+777/, level: 'warning', desc: '不安全权限' },
-      { pattern: /:\(\)\s*\{ :\|:& \};:/, level: 'critical', desc: 'Fork Bomb' },
-      { pattern: /sudo\s+/, level: 'warning', desc: '提权操作' },
-      { pattern: /git\s+push\s+--force/, level: 'warning', desc: '强制推送' },
-      { pattern: /npm\s+publish/, level: 'warning', desc: 'NPM发布' },
-      { pattern: />\s*\/dev\/sd[a-z]/, level: 'critical', desc: '写入块设备' },
-      { pattern: /wget.*-O.*\/etc\//, level: 'critical', desc: '覆盖系统配置' },
-      { pattern: /pip\s+install/, level: 'info', desc: 'Pip安装' }
+      // ===== P0 极高危 (立即阻断) =====
+      { pattern: /rm\s+-rf\s+\//, level: 'critical', desc: 'P0 删除根目录', category: '文件系统' },
+      { pattern: /rm\s+-rf\s+\/\*/, level: 'critical', desc: 'P0 删除全部文件', category: '文件系统' },
+      { pattern: /curl.*\|.*(ba)?sh/, level: 'critical', desc: 'P0 远程脚本执行', category: '远程执行' },
+      { pattern: /wget.*\|.*(ba)?sh/, level: 'critical', desc: 'P0 远程脚本下载执行', category: '远程执行' },
+      { pattern: /:\(\)\s*\{ :\|:& \};:/, level: 'critical', desc: 'P0 Fork Bomb', category: '资源耗尽' },
+      { pattern: /mkfs\./, level: 'critical', desc: 'P0 格式化磁盘', category: '文件系统' },
+      { pattern: /dd\s+if=.*of=\/dev\//, level: 'critical', desc: 'P0 磁盘直接写入', category: '文件系统' },
+      { pattern: />\s*\/dev\/sd[a-z]/, level: 'critical', desc: 'P0 写入块设备', category: '文件系统' },
+      { pattern: /shutdown|init\s+0|halt/, level: 'critical', desc: 'P0 系统关机命令', category: '系统控制' },
+      { pattern: /eval\s*\(\s*\$/, level: 'critical', desc: 'P0 动态代码执行', category: '代码注入' },
+      { pattern: /exec\s+rm/, level: 'critical', desc: 'P0 强制删除执行', category: '文件系统' },
+
+      // ===== P1 高危 (需确认) =====
+      { pattern: /chmod\s+777/, level: 'warning', desc: 'P1 不安全权限设置', category: '权限' },
+      { pattern: /sudo\s+/, level: 'warning', desc: 'P1 提权操作', category: '权限' },
+      { pattern: /chmod\s+-R\s+777/, level: 'warning', desc: 'P1 递归777权限', category: '权限' },
+      { pattern: /git\s+push\s+--force/, level: 'warning', desc: 'P1 Git强制推送', category: '版本控制' },
+      { pattern: /git\s+push\s+-f/, level: 'warning', desc: 'P1 Git快捷强制推送', category: '版本控制' },
+      { pattern: /npm\s+publish/, level: 'warning', desc: 'P1 NPM发布', category: '发布' },
+      { pattern: /pip\s+install\s+--user/, level: 'warning', desc: 'P1 用户级pip安装', category: '依赖' },
+      { pattern: /composer\s+global/, level: 'warning', desc: 'P1 Composer全局安装', category: '依赖' },
+      { pattern: />\s*\/etc\//, level: 'warning', desc: 'P1 覆盖系统配置', category: '文件系统' },
+      { pattern: /rm\s+rf\s+\./, level: 'warning', desc: 'P1 当前目录递归删除', category: '文件系统' },
+      { pattern: /find.*-delete/, level: 'warning', desc: 'P1 find删除操作', category: '文件系统' },
+
+      // ===== P2 中危 (记录) =====
+      { pattern: /npm\s+i\s+-g/, level: 'info', desc: 'P2 NPM全局安装', category: '依赖' },
+      { pattern: /pip\s+install/, level: 'info', desc: 'P2 pip安装包', category: '依赖' },
+      { pattern: /docker\s+run\s+--privileged/, level: 'warning', desc: 'P1 Docker特权模式', category: '容器' },
+      { pattern: /kill\s+-9/, level: 'info', desc: 'P2 强制终止进程', category: '进程' },
+      { pattern: /pkill/, level: 'info', desc: 'P2 批量终止进程', category: '进程' },
+      { pattern: /curl\s+https?:\/\/.*\.(sh|py|rb)/, level: 'info', desc: 'P2 下载脚本', category: '下载' },
+      { pattern: /nc\s+-l\s+/, level: 'info', desc: 'P2 网络监听', category: '网络' }
     ];
     
     this.BLACKLIST_PATHS = [

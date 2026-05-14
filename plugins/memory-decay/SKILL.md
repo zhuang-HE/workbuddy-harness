@@ -1,10 +1,10 @@
 # memory-decay 记忆衰减管理
 
-> **Skill 类型**: 系统插件  
-> **版本**: 1.0.0  
-> **优先级**: P4-6 (P1)  
-> **维度**: D2-Memory  
-> **创建时间**: 2026-05-12  
+> **Skill 类型**: 系统插件
+> **版本**: 1.1.0 (四层压缩增强)
+> **优先级**: P4-6 (P1)
+> **维度**: D2-Memory
+> **创建时间**: 2026-05-12
 > **触发词**: 记忆衰减、上下文压缩、遗忘曲线、token压缩、memory decay、compression
 
 ## 功能概述
@@ -27,15 +27,19 @@
 | 对话细节 | 0.5 | 快 |
 | 闲聊 | 0.3 | 极快 |
 
-## 压缩策略
-- importance: 优先保留高权重消息
-- recency: 优先保留最近消息  
-- hybrid: 权重和时效混合排序
+## 四层压缩系统 v2 (P1增强)
+| 层级 | 功能 | 关键参数 |
+|------|------|---------|
+| L1 滑动窗口 | 保留最近N轮对话 | windowSize=20 |
+| L2 分层摘要 | 旧内容压缩为摘要 | groupSize=10 |
+| L3 重要性评分 | 基于衰减+类型打分 | threshold=2 |
+| L4 Token预算 | 严格控制总Token | maxTokens=8000 |
 
 ## CLI命令
 ```bash
 node memory-decay.js add "用户偏好TypeScript"
 node memory-decay.js compress
+node memory-decay.js compress4layer   # 四层压缩测试
 node memory-decay.js weights
 node memory-decay.js curve
 node memory-decay.js report
@@ -44,3 +48,4 @@ node memory-decay.js model exponential
 
 ## 版本历史
 | 2026-05-12 | 1.0.0 | 初始版本：3种衰减模型、6级重要性、3种压缩策略 |
+| 2026-05-14 | 1.1.0 | 新增四层压缩系统：滑动窗口+分层摘要+重要性评分+Token预算 |
