@@ -285,7 +285,7 @@ eval-framework 汇总：
 |------|------|------|--------|---------|
 | P4-1 | `task-orchestrator` | D5 调度 | 636 | 目标分解·DAG依赖·WorkerPool(4workers)·PriorityQueue·指数退避重试 |
 | P4-2 | `eval-framework` | D8 评测 | 600+ | 五维评测·RuntimeEvalTracker真实数据收集·A/B测试·回归检测·30基准用例 |
-| P4-3 | `multi-agent-orchestrator` | D9 协作 | 800+ | 10团队模板·9角色(三省六部)·能力矩阵匹配·智能降级·消息优先级队列 |
+| P4-3 | `multi-agent-orchestrator` | D9 协作 | 800+ | 10团队模板·9角色(三省六部)·spawn/wait简化API(v2.3)·能力矩阵匹配·智能降级 |
 | P4-4 | `runtime-guardian` | D7 安全 | 800+ | 29危险模式(P0×11/P1×12/P2×6)·文件黑名单·三模式·分类标签 |
 | P4-5 | `context-awareness` | D1 身份 | 389 | 四维感知(环境/项目/时间/对话)·动态策略·深夜简洁模式·长会话提示 |
 | P4-6 | `memory-decay` | D2 记忆 | 620 | 指数衰减·五级重要性·四层压缩(v2)·Token预算控制 |
@@ -329,11 +329,12 @@ Phase 9   97%  D1:90 D2:95 D3:90 D4:95 D5:88 D6:85 D7:88 D8:100 D9:95
 
 | 功效 | 说明 |
 |------|------|
-| **降低工程门槛** | 无需从零构建基础设施，9 个插件即装即用 |
+| **降低工程门槛** | 无需从零构建基础设施，12 个插件即装即用 |
 | **量化 Agent 能力** | 30 条基准用例 + 五维评测模型，Agent 能力可视化 |
-| **保障生产安全** | 12 种危险模式实时拦截，3 种安全模式按需切换 |
+| **保障生产安全** | 29 种危险模式实时拦截（P0×11/P1×12/P2×6），3 种安全模式按需切换 |
 | **提升协作效率** | 10 种团队模板 + 智能路由，多Agent不再互相踩脚 |
-| **持续自我进化** | 自动学习闭环，Agent 越用越聪明 |
+| **持续自我进化** | 自动学习闭环 + D4+D3联合闭环，Agent 越用越聪明 |
+| **记忆安全可控** | Git版本控制 + 四层压缩，记忆管理零丢失 |
 
 ### 对 WorkBuddy 系统的提升
 
@@ -342,10 +343,10 @@ Phase 9   97%  D1:90 D2:95 D3:90 D4:95 D5:88 D6:85 D7:88 D8:100 D9:95
 | 维度覆盖 | 7/9 | 9/9 | +2 个从零构建 |
 | 自动化 Hooks | 10 | 21 | +110% |
 | 评测基准 | 0 | 30 条 | 从零建立 |
-| 团队模板 | 0 | 8 种 | 从零建立 |
+| 团队模板 | 0 | 10 种 | 从零建立 |
 | 路由准确率 | N/A | 10/10 | 100% |
 | 安全防护 | 静态审查 | 静态+运行时 | 双重防护 |
-| 记忆管理 | 手动蒸馏 | 自动衰减+压缩 | 全自动化 |
+| 记忆管理 | 手动蒸馏 | 自动衰减+压缩+Git版本 | 全自动化 |
 
 ---
 
@@ -383,12 +384,16 @@ start dashboard/harness-dashboard.html
 cd ~/.workbuddy/plugins
 for p in task-orchestrator eval-framework multi-agent-orchestrator \
          runtime-guardian context-awareness memory-decay \
-         fusion-sync-enhancer learning-loop fusion-router; do
+         fusion-sync-enhancer learning-loop fusion-router \
+         memory-graph skill-analyzer memory-git; do
   node test-framework/index.js run $p
 done
 
 # 测试融合路由
 node fusion-router/index.js test
+
+# 测试记忆Git版本控制
+node memory-git/index.js status
 ```
 
 ---
@@ -398,16 +403,19 @@ node fusion-router/index.js test
 ```
 workbuddy-harness/
 ├── README.md                           # 本文件
-├── plugins/                            # 9 个核心插件
+├── plugins/                            # 12 个核心插件
 │   ├── task-orchestrator/              # D5: 任务编排调度
 │   ├── eval-framework/                 # D8: 评测框架
-│   ├── multi-agent-orchestrator/       # D9: 多Agent协作
+│   ├── multi-agent-orchestrator/        # D9: 多Agent协作
 │   ├── runtime-guardian/               # D7: 运行时安全
 │   ├── context-awareness/              # D1: 上下文感知
 │   ├── memory-decay/                   # D2: 记忆衰减管理
+│   ├── memory-git/                     # D2: 记忆Git版本控制
+│   ├── memory-graph/                   # D2: 关系图谱
 │   ├── fusion-sync-enhancer/           # D6: 融合同步增强
 │   ├── learning-loop/                  # D4: 学习闭环
-│   └── fusion-router/                  # D6: 融合智能路由
+│   ├── fusion-router/                  # D6: 融合智能路由
+│   └── skill-analyzer/                # D3: 技能分析
 ├── hooks/
 │   └── hooks.json                      # 21 个自动化 Hooks
 ├── dashboard/
@@ -430,6 +438,8 @@ workbuddy-harness/
 4. **多系统深度融合** — WorkBuddy + HERMES + Obsidian 三位一体
 5. **分层架构清晰** — Identity → Skills → Memory → Automation，职责分明
 6. **持续审计防退化** — 每周自动化健康检查，防止系统膨胀和性能衰减
+7. **记忆版本可控** — Git版本控制确保记忆变更可追溯、可回滚
+8. **安全分层防御** — 29种危险模式三级分类(P0/P1/P2)，运行时实时拦截
 
 ---
 
@@ -449,6 +459,30 @@ plugin-name/
 - `SKILL.md` 包含完整的 CLI 命令和 API 文档
 - 代码遵循现有风格（CommonJS，无外部依赖）
 
+### 插件开发快速模板
+
+```javascript
+// index.js
+class MyPlugin {
+  constructor(options = {}) {
+    this.name = 'my-plugin';
+    this.version = '1.0';
+  }
+
+  initialize(manager) {
+    this.manager = manager;
+    // 注册Hooks: this.registerHook('event-name', this.handler);
+  }
+
+  // CLI 命令入口
+  async run(args) {
+    console.log('MyPlugin v' + this.version);
+  }
+}
+
+module.exports = MyPlugin;
+```
+
 ---
 
 ## 许可证
@@ -457,4 +491,4 @@ MIT © 2026 WorkBuddy
 
 ---
 
-*由 CodeBuddy Code (AI Engineer) 构建 · 2026 年 5 月 14 日 · v3.2*
+*由 CodeBuddy Code (AI Engineer) 构建 · 2026 年 5 月 14 日 · v3.3*

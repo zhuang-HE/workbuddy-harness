@@ -1,6 +1,12 @@
 /**
- * multi-agent-orchestrator v2.2 - P4-3 (P0) 多Agent编排器 [三省六部增强版]
+ * multi-agent-orchestrator v2.3 - P4-3 (P0) 多Agent编排器 [三省六部增强版 + 简化API]
  * 维度: D9-MultiAgent
+ *
+ * v2.3 优化 (2026-05-14 P2-1 spawn/wait简化API):
+ *   - 简化spawn: spawn() / spawnSync() / run()
+ *   - 简化wait: waitFor() / waitAll() / waitFirst()
+ *   - 链式调用: run() = spawn + wait
+ *   - 批量操作: spawnMany()
  *
  * v2.2 优化 (2026-05-14 三省六部增强):
  *   - Agent模板重构: 7→9核心角色，新增critic(批评者)和coordinator(协调员)
@@ -535,10 +541,187 @@ class AgentProcessManager {
       }, {})
     };
   }
+
+  // ============================================================================
+  // P2-1: 简化API层 - spawn/wait 模式
+  // ============================================================================
+
+  /**
+   * P2-1: 简化spawn - 一步完成Agent调用
+   * 用法: await mao.spawn('coder', { id: 'task1', description: '写快排' })
+   */
+  async spawn(agentId, taskInput, options = {}) {
+    // 统一输入格式
+    const task = typeof taskInput === 'string' 
+      ? { id: `task_${Date.now()}`, description: taskInput }
+      : { id: taskInput.id || `task_${Date.now()}`, ...taskInput };
+    
+    task.description = task.description || taskInput;
+    task.type = task.type || options.type || 'code_generation';
+    task.complexity = task.complexity || options.complexity || 5;
+    
+    return this.spawnAgent(agentId, task, options);
+  }
+
+  /**
+   * P2-1: 简化spawnSync - 同步版本，返回结果Promise
+   * 用法: mao.spawnSync('coder', '写快排')  // 不等待，直接返回进程ID
+   */
+  spawnSync(agentId, taskInput, options = {}) {
+    const task = typeof taskInput === 'string' 
+      ? { id: `task_${Date.now()}`, description: taskInput }
+      : { id: taskInput.id || `task_${Date.now()}`, ...taskInput };
+    
+    task.description = task.description || taskInput;
+    task.type = task.type || options.type || 'code_generation';
+    task.complexity = task.complexity || options.complexity || 5;
+    
+    // 立即返回进程ID，不等待完成
+    const modelCfg = selectModel(task.type, task.complexity);
+    const procId = `proc_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    
+    this.processes.set(procId, {
+      pid: procId,
+      agentId,
+      taskId: task.id,
+      startTime: Date.now(),
+      status: 'spawned',  // 特殊状态：已spawn未完成
+      model: modelCfg.model,
+      task  // 保存任务以供后续使用
+    });
+    
+    // 后台执行
+    this._backgroundSpawn(procId, agentId, task, options);
+    
+    return { pid: procId, taskId: task.id, status: 'spawned' };
+  }
+
+  /**
+   * P2-1: 后台spawn执行
+   */
+  async _backgroundSpawn(procId, agentId, task, options) {
+    const procInfo = this.processes.get(procId);
+    if (!procInfo) return;
+    
+    const agent = this.orchestrator.agents.get(agentId);
+    if (!agent) {
+      procInfo.status = 'failed';
+      procInfo.result = { error: 'Agent not found' };
+      return;
+    }
+    
+    procInfo.status = 'running';
+    
+    try {
+      const modelCfg = selectModel(task.type, task.complexity);
+      const timeoutMs = options.timeout || (task.complexity >= 8 ? 120000 : 60000);
+      const prompt = this.buildAgentPrompt(agent, task);
+      
+      const result = await Promise.race([
+        this.ollama.generate(modelCfg.model, prompt, {
+          temperature: 0.7,
+          maxTokens: modelCfg.maxTokens
+        }),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout')), timeoutMs)
+        )
+      ]);
+      
+      procInfo.endTime = Date.now();
+      procInfo.status = result.success ? 'completed' : 'failed';
+      procInfo.result = result;
+    } catch (error) {
+      procInfo.endTime = Date.now();
+      procInfo.status = 'failed';
+      procInfo.result = { error: error.message };
+    }
+  }
+
+  /**
+   * P2-1: 等待指定进程完成
+   * 用法: await mao.waitFor(pid, { timeout: 60000 })
+   */
+  async waitFor(pid, options = {}) {
+    const timeout = options.timeout || 120000;
+    const pollInterval = options.pollInterval || 500;
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < timeout) {
+      const procInfo = this.processes.get(pid);
+      if (!procInfo) {
+        throw new Error(`Process ${pid} not found`);
+      }
+      
+      if (procInfo.status === 'completed' || procInfo.status === 'failed') {
+        return {
+          pid,
+          status: procInfo.status,
+          result: procInfo.result
+        };
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
+    }
+    
+    throw new Error(`Timeout waiting for process ${pid}`);
+  }
+
+  /**
+   * P2-1: 等待所有指定进程完成
+   * 用法: const results = await mao.waitAll([pid1, pid2])
+   */
+  async waitAll(pids, options = {}) {
+    return Promise.all(pids.map(pid => this.waitFor(pid, options)));
+  }
+
+  /**
+   * P2-1: 等待任意一个进程完成（最先完成的）
+   * 用法: const result = await mao.waitFirst([pid1, pid2])
+   */
+  async waitFirst(pids, options = {}) {
+    return Promise.race(pids.map(pid => this.waitFor(pid, options)));
+  }
+
+  /**
+   * P2-1: 链式调用 - spawn后自动wait
+   * 用法: const result = await mao.run('coder', '写快排')
+   */
+  async run(agentId, taskInput, options = {}) {
+    const spawnResult = this.spawnSync(agentId, taskInput, options);
+    return this.waitFor(spawnResult.pid, { timeout: options.timeout });
+  }
+
+  /**
+   * P2-1: 批量spawn
+   * 用法: const pids = await mao.spawnMany('coder', ['任务1', '任务2'])
+   */
+  async spawnMany(agentId, tasks, options = {}) {
+    const pids = [];
+    for (const task of tasks) {
+      const result = this.spawnSync(agentId, task, options);
+      pids.push(result.pid);
+    }
+    return pids;
+  }
+
+  /**
+   * P2-1: 获取简化进程状态
+   */
+  getProcStatus(pid) {
+    const proc = this.processes.get(pid);
+    if (!proc) return null;
+    
+    return {
+      pid: proc.pid,
+      status: proc.status,
+      elapsed: Date.now() - proc.startTime,
+      result: proc.result
+    };
+  }
 }
 
 // ============================================================================
-// MultiAgentOrchestrator v2.0
+// MultiAgentOrchestrator v2.3
 // ============================================================================
 class MultiAgentOrchestrator {
   constructor(options = {}) {
@@ -550,6 +733,16 @@ class MultiAgentOrchestrator {
     this.processManager = new AgentProcessManager(this);
     this.messageQueue = new Map();
     this.qualityReports = new Map();
+
+    // v2.3: 代理简化API到主类
+    this.spawn = (agentId, task, opts) => this.processManager.spawn(agentId, task, opts);
+    this.spawnSync = (agentId, task, opts) => this.processManager.spawnSync(agentId, task, opts);
+    this.waitFor = (pid, opts) => this.processManager.waitFor(pid, opts);
+    this.waitAll = (pids, opts) => this.processManager.waitAll(pids, opts);
+    this.waitFirst = (pids, opts) => this.processManager.waitFirst(pids, opts);
+    this.run = (agentId, task, opts) => this.processManager.run(agentId, task, opts);
+    this.spawnMany = (agentId, tasks, opts) => this.processManager.spawnMany(agentId, tasks, opts);
+    this.getProcStatus = (pid) => this.processManager.getProcStatus(pid);
 
     // ---- 角色枚举 ----
     this.AgentRole = {
