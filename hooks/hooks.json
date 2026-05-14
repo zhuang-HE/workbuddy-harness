@@ -233,20 +233,21 @@
     {
       "id": "mao_auto_route",
       "type": "task_start",
-      "enabled": false,
-      "name": "[P4-3] 多Agent自动路由",
-      "description": "极高复杂度任务(≥8)启用多Agent协作",
-      "condition": "complexity >= 8",
+      "enabled": true,
+      "name": "[P4-3] 多Agent智能路由 v2.0",
+      "description": "按复杂度自动选择协作模式：<5 Quick单人，5-7 Standard 3人，≥8 Full 5人",
+      "condition": "complexity >= 4",
       "actions": [
+        {
+          "type": "execute",
+          "command": "node",
+          "args": ["-e", "const MAO=require('~/.workbuddy/plugins/multi-agent-orchestrator/index.js');const mao=new MAO();const r=mao.startOrchestration('{{task_description}}');console.log(JSON.stringify({mode:r.mode,team:r.teamName||'QUICK-跳过组队',members:r.memberCount||0,tasks:r.tasks?r.tasks.length:1,complexity:r.estimatedComplexity||r.complexity}))"],
+          "timeout": 10
+        },
         {
           "type": "log",
           "level": "info",
-          "message": "[MultiAgentOrchestrator] 极高复杂度任务，建议启用多Agent协作"
-        },
-        {
-          "type": "notify",
-          "channel": "console",
-          "message": "🤖 检测到极高复杂度任务 ({{complexity}}/10)，建议使用多Agent团队协作"
+          "message": "[MAO v2.0] 复杂度={{complexity}} → {{mao_route.mode}}模式 → {{mao_route.team}}"
         }
       ]
     },
@@ -406,9 +407,9 @@
   
   "_metadata": {
     "created": "2026-05-11",
-    "updated": "2026-05-12",
+    "updated": "2026-05-12 16:30",
     "author": "WorkBuddy AI Engineer",
-    "version": "2.3",
-    "changes": "新增 P4-9 融合智能路由 Hook"
+    "version": "2.4",
+    "changes": "MAO v2.0优化: Agent 7→5核心+2扩展, 团队8→6核心, 三级协作模式, 质量门禁, 模型动态绑定"
   }
 }
