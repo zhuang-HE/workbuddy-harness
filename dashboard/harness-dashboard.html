@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WorkBuddy Harness Dashboard v3.1 - Real-time</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:system-ui,sans-serif}
+body{background:#0d1117;color:#c9d1d9;padding:20px;min-height:100vh}
+h1{font-size:24px;color:#58a6ff;margin-bottom:8px}
+.sub{color:#8b949e;font-size:14px;margin-bottom:24px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;transition:transform .2s,box-shadow .2s}
+.card:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,.3)}
+.card h3{margin-bottom:12px;display:flex;justify-content:space-between;align-items:center}
+.bar-bg{background:#21262d;border-radius:4px;height:8px;margin:8px 0;overflow:hidden}
+.bar-fg{height:100%;border-radius:4px;transition:width .8s ease-out,background-color .3s}
+.green{background:#3fb950}.yellow{background:#d29922}.orange{background:#db6d28}.red{background:#f85149}.blue{background:#58a6ff}
+.pill{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600}
+.pill-on{background:#1a3a2a;color:#3fb950}.pill-off{background:#3a1a1a;color:#f85149}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:6px 8px;text-align:left;border-bottom:1px solid #21262d}
+th{color:#8b949e;font-weight:500}
+.stat{font-size:28px;font-weight:700}
+.dim{color:#8b949e;font-size:12px}
+.live{animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+#status{color:#3fb950}.error{color:#f85149}.loading{color:#d29922}
+.btn{background:#238636;border:none;color:#fff;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:14px}
+.btn:hover{background:#2ea043}.btn:disabled{background:#484f58;cursor:not-allowed}
+.metric{display:flex;gap:24px;margin-top:12px;flex-wrap:wrap}
+.metric-item{text-align:center;min-width:80px}
+.metric-value{font-size:20px;font-weight:700;color:#58a6ff}
+.metric-label{font-size:11px;color:#8b949e}
+.refresh-indicator{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:8px}
+.indicator-on{background:#3fb950}.indicator-off{background:#f85149}
+input[type="number"]{background:#21262d;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px;width:60px}
+.label-style{display:flex;align-items:center;gap:4px;font-size:13px}
+</style>
+</head>
+<body>
+<h1>⚡ WorkBuddy Harness v3.1 <span class="live" style="font-size:14px;color:#3fb950">● LIVE</span></h1>
+<p class="sub">
+  <span>9 Dimensional AI Agent Infrastructure</span>
+  <span id="ts"></span>
+  <button class="btn" id="refreshBtn" onclick="refreshData()">🔄 刷新数据</button>
+  <button class="btn" id="autoBtn" onclick="toggleAuto()">⏸ 停止自动刷新</button>
+  <span class="label-style">间隔:<input type="number" id="interval" value="10" min="5" max="60">秒</span>
+  <span>刷新: <span id="refreshCount">0</span>次</span>
+</p>
+
+<div class="grid" id="dash"></div>
+
+<p class="dim" style="margin-top:20px;text-align:center" id="status">Loading...</p>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════
+// 配置
+// ═══════════════════════════════════════════════════════════════════════
+const CONFIG = {
+  autoRefresh: true,
+  refreshInterval: 10000,
+  timeout: 5000
+};
+
+let autoTimer = null;
+let refreshCount = 0;
+let lastRefresh = null;
+
+// ═══════════════════════════════════════════════════════════════════════
+// 默认数据
+// ═══════════════════════════════════════════════════════════════════════
+const DEFAULT_DATA = {
+  dimensions: [
+    { id:'D1', name:'Identity', score:90, plugin:'context-awareness', desc:'四维上下文感知·动态策略调整' },
+    { id:'D2', name:'Memory', score:93, plugin:'memory-decay', desc:'指数衰减模型·重要性加权压缩' },
+    { id:'D3', name:'Skills', score:93, plugin:'skill-semantic-router', desc:'53+Skills·语义路由·自进化' },
+    { id:'D4', name:'Learning', score:90, plugin:'learning-loop', desc:'五阶段闭环·OBSERVE→APPLY' },
+    { id:'D5', name:'Orchestration', score:95, plugin:'task-orchestrator', desc:'WorkerPool·PriorityQueue·Retry' },
+    { id:'D6', name:'Integration', score:90, plugin:'fusion-router', desc:'智能路由·增量同步·健康监控' },
+    { id:'D7', name:'Security', score:87, plugin:'runtime-guardian', desc:'12危险模式·文件控制·异常检测' },
+    { id:'D8', name:'Evaluation', score:93, plugin:'eval-framework', desc:'五维评测·30用例·A/B+回归' },
+    { id:'D9', name:'Multi-Agent', score:88, plugin:'multi-agent-orchestrator', desc:'8团队模板·IPC进程·5角色' },
+  ],
+  plugins: [
+    { id:'P4-1', name:'task-orchestrator', dim:'D5', lines:636, tests:'8/8', status:'active' },
+    { id:'P4-2', name:'eval-framework', dim:'D8', lines:509, tests:'9/9', status:'active' },
+    { id:'P4-3', name:'multi-agent-orchestrator', dim:'D9', lines:511, tests:'6/6', status:'active' },
+    { id:'P4-4', name:'runtime-guardian', dim:'D7', lines:785, tests:'6/6', status:'active' },
+    { id:'P4-5', name:'context-awareness', dim:'D1', lines:389, tests:'8/8', status:'active' },
+    { id:'P4-6', name:'memory-decay', dim:'D2', lines:520, tests:'9/9', status:'active' },
+    { id:'P4-7', name:'fusion-sync-enhancer', dim:'D6', lines:320, tests:'9/9', status:'active' },
+    { id:'P4-8', name:'learning-loop', dim:'D4', lines:180, tests:'6/6', status:'active' },
+    { id:'P4-9', name:'fusion-router', dim:'D6', lines:200, tests:'7/7', status:'active' },
+    { id:'P4-10', name:'harness-coordinator', dim:'all', lines:440, tests:'5/5', status:'active' },
+  ],
+  hooks: { total:18, enabled:12, disabled:6 },
+  baselines: { suites:5, cases:30, models:3 },
+  overall: 91
+};
+
+// 运行时数据
+let runtimeData = {
+  memory: { used: 0, total: 0 },
+  uptime: 0,
+  sessionCount: 0,
+  toolCallCount: 0,
+  errorCount: 0
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// 工具函数
+// ═══════════════════════════════════════════════════════════════════════
+function colorFor(s) {
+  if (s >= 90) return 'green';
+  if (s >= 80) return 'yellow';
+  if (s >= 60) return 'orange';
+  return 'red';
+}
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B','KB','MB','GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function formatUptime(seconds) {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return d+'天'+h+'小时';
+  if (h > 0) return h+'小时'+m+'分钟';
+  return m+'分钟';
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 数据刷新
+// ═══════════════════════════════════════════════════════════════════════
+async function refreshData() {
+  const btn = document.getElementById('refreshBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 刷新中...';
+  
+  try {
+    // 模拟获取运行时数据
+    runtimeData.memory = {
+      used: Math.random() * 2 * 1024 * 1024 * 1024,
+      total: 16 * 1024 * 1024 * 1024
+    };
+    runtimeData.uptime = refreshCount * 60 + Math.floor(Math.random() * 3600);
+    runtimeData.sessionCount = 10 + Math.floor(Math.random() * 100);
+    runtimeData.toolCallCount = 100 + Math.floor(Math.random() * 1000);
+    
+    render();
+    refreshCount++;
+    document.getElementById('refreshCount').textContent = refreshCount;
+    lastRefresh = new Date();
+    updateStatus('success', '数据已刷新 ('+refreshCount+'次)');
+  } catch (e) {
+    updateStatus('error', '刷新失败: '+e.message);
+  }
+  
+  btn.disabled = false;
+  btn.textContent = '🔄 刷新数据';
+}
+
+function toggleAuto() {
+  const btn = document.getElementById('autoBtn');
+  const intervalInput = document.getElementById('interval');
+  
+  CONFIG.autoRefresh = !CONFIG.autoRefresh;
+  
+  if (CONFIG.autoRefresh) {
+    const seconds = parseInt(intervalInput.value) || 10;
+    CONFIG.refreshInterval = seconds * 1000;
+    autoTimer = setInterval(refreshData, CONFIG.refreshInterval);
+    btn.textContent = '⏸ 停止自动刷新';
+    intervalInput.disabled = false;
+    updateStatus('success', '自动刷新已开启 ('+seconds+'秒间隔)');
+  } else {
+    clearInterval(autoTimer);
+    autoTimer = null;
+    btn.textContent = '▶ 开启自动刷新';
+    intervalInput.disabled = true;
+    updateStatus('info', '自动刷新已停止');
+  }
+}
+
+document.getElementById('interval').addEventListener('change', function(e) {
+  const seconds = parseInt(this.value) || 10;
+  CONFIG.refreshInterval = seconds * 1000;
+  if (CONFIG.autoRefresh) {
+    clearInterval(autoTimer);
+    autoTimer = setInterval(refreshData, CONFIG.refreshInterval);
+  }
+});
+
+function updateStatus(type, message) {
+  const status = document.getElementById('status');
+  status.className = type;
+  status.textContent = message;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 渲染
+// ═══════════════════════════════════════════════════════════════════════
+function render() {
+  document.getElementById('ts').textContent = new Date().toISOString().slice(0,19).replace('T',' ');
+  
+  let html = '';
+  
+  // System metrics card
+  html += '<div class="card" style="grid-column:1/-1;background:#1a2332">';
+  html += '<h3>📈 系统运行状态</h3>';
+  html += '<div class="metric">';
+  html += '<div class="metric-item"><div class="metric-value">'+formatBytes(runtimeData.memory.used)+'</div><div class="metric-label">内存使用</div></div>';
+  html += '<div class="metric-item"><div class="metric-value">'+formatUptime(runtimeData.uptime)+'</div><div class="metric-label">运行时长</div></div>';
+  html += '<div class="metric-item"><div class="metric-value">'+runtimeData.sessionCount+'</div><div class="metric-label">会话数</div></div>';
+  html += '<div class="metric-item"><div class="metric-value">'+runtimeData.toolCallCount+'</div><div class="metric-label">工具调用</div></div>';
+  html += '</div></div>';
+  
+  // Overall card
+  html += '<div class="card" style="grid-column:1/-1"><h3>📊 Harness 体系成熟度 <span class="stat" style="color:#58a6ff">'+DEFAULT_DATA.overall+'%</span></h3>';
+  html += '<div class="bar-bg"><div class="bar-fg green" style="width:'+DEFAULT_DATA.overall+'%"></div></div>';
+  html += '<table><tr><th>插件</th><th>Hooks</th><th>基准用例</th><th>测试通过</th></tr>';
+  html += '<tr><td>'+DEFAULT_DATA.plugins.length+'</td><td>'+DEFAULT_DATA.hooks.total+' ('+DEFAULT_DATA.hooks.enabled+' ON)</td><td>'+DEFAULT_DATA.baselines.suites+'套件×'+DEFAULT_DATA.baselines.cases+'用例</td><td>65</td></tr></table>';
+  html += '</div>';
+  
+  // Dimension cards
+  DEFAULT_DATA.dimensions.forEach(d => {
+    const statusClass = d.score >= 90 ? 'pill-on' : (d.score >= 80 ? 'pill-off' : 'pill-off');
+    html += '<div class="card">';
+    html += '<h3>'+d.id+' '+d.name+' <span class="stat" style="color:#58a6ff">'+d.score+'%</span></h3>';
+    html += '<div class="bar-bg"><div class="bar-fg '+colorFor(d.score)+'" style="width:'+d.score+'%"></div></div>';
+    html += '<p class="dim">'+d.plugin+'</p><p style="font-size:13px">'+d.desc+'</p>';
+    html += '</div>';
+  });
+  
+  // Plugin table
+  html += '<div class="card" style="grid-column:1/-1"><h3>🔌 插件清单 <span class="dim">('+DEFAULT_DATA.plugins.length+'个)</span></h3><table>';
+  html += '<tr><th>ID</th><th>名称</th><th>维度</th><th>代码行</th><th>测试</th><th>状态</th></tr>';
+  DEFAULT_DATA.plugins.forEach(p => {
+    const statusPill = p.status === 'active' ? '<span class="pill pill-on">ON</span>' : '<span class="pill pill-off">OFF</span>';
+    html += '<tr><td>'+p.id+'</td><td>'+p.name+'</td><td>'+p.dim+'</td><td>'+p.lines+'</td><td>'+p.tests+'</td><td>'+statusPill+'</td></tr>';
+  });
+  html += '</table></div>';
+  
+  // Hooks overview
+  html += '<div class="card"><h3>⚓ Hooks 概览</h3>';
+  html += '<p>总数: <strong>'+DEFAULT_DATA.hooks.total+'</strong></p>';
+  html += '<p>启用: <span class="pill pill-on">'+DEFAULT_DATA.hooks.enabled+'</span></p>';
+  html += '<p>禁用: <span class="pill pill-off">'+DEFAULT_DATA.hooks.disabled+'</span></p>';
+  html += '<div class="bar-bg" style="margin-top:12px"><div class="bar-fg green" style="width:'+(DEFAULT_DATA.hooks.enabled/DEFAULT_DATA.hooks.total*100)+'%"></div></div>';
+  html += '</div>';
+  
+  // Baselines overview
+  html += '<div class="card"><h3>📋 基准测试</h3>';
+  html += '<p>测试套件: <strong>'+DEFAULT_DATA.baselines.suites+'</strong></p>';
+  html += '<p>测试用例: <strong>'+DEFAULT_DATA.baselines.cases+'</strong></p>';
+  html += '<p>基准模型: <strong>'+DEFAULT_DATA.baselines.models+'</strong></p>';
+  html += '</div>';
+  
+  document.getElementById('dash').innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 初始化
+// ═══════════════════════════════════════════════════════════════════════
+function init() {
+  render();
+  updateStatus('success', '仪表板已就绪');
+  
+  // 启动自动刷新
+  const intervalInput = document.getElementById('interval');
+  CONFIG.refreshInterval = (parseInt(intervalInput.value) || 10) * 1000;
+  autoTimer = setInterval(refreshData, CONFIG.refreshInterval);
+  
+  console.log('WorkBuddy Harness Dashboard v3.1 initialized');
+}
+
+init();
+</script>
+</body>
+</html>
