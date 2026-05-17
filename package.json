@@ -1,0 +1,40 @@
+{
+  "name": "workbuddy-harness",
+  "version": "2.0.0",
+  "description": "AI Agent 九维基础设施框架 — Hook Engine + Eval Runner + Runtime Guardian",
+  "main": "engine/index.js",
+  "scripts": {
+    "start": "node engine/index.js help",
+    "eval": "node engine/index.js eval run all",
+    "eval:report": "node engine/index.js eval report",
+    "guardian": "node engine/index.js guardian scan",
+    "guardian:stats": "node engine/index.js guardian stats",
+    "hook:list": "node engine/index.js hook list",
+    "hook:stats": "node engine/index.js hook stats",
+    "health": "node engine/index.js health",
+    "daemon:start": "node engine/index.js daemon start",
+    "daemon:status": "node engine/index.js daemon status",
+    "test": "node engine/test-runner.js",
+    "test:guardian": "node engine/test-runner.js runtime-guardian",
+    "test:eval": "node engine/test-runner.js eval-framework"
+  },
+  "keywords": [
+    "ai-agent",
+    "infrastructure",
+    "workbuddy",
+    "hook-engine",
+    "eval-framework",
+    "security-guardian",
+    "memory-decay",
+    "task-orchestrator",
+    "multi-agent"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zhuang-HE/workbuddy-harness.git"
+  }
+}

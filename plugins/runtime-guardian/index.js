@@ -27,7 +27,7 @@ class RuntimeGuardian {
     this.DANGEROUS_COMMANDS = [
       { pattern: /rm\s+-rf\s+\//, level: 'critical', desc: 'P0 删除根目录 (Unix)', category: '文件系统' },
       { pattern: /rm\s+-rf\s+\/\*/, level: 'critical', desc: 'P0 删除全部文件 (Unix)', category: '文件系统' },
-      { pattern: /del\s+\/[FSQ]\s+\/[A-Z]:\\/, level: 'critical', desc: 'P0 强制删除磁盘 (Win)', category: '文件系统' },
+      { pattern: /del\s+(\/[FSQ]\s*)+[A-Z]:/, level: 'critical', desc: 'P0 强制删除磁盘 (Win)', category: '文件系统' },
       { pattern: /rd\s+\/[SQ]\s+[A-Z]:\\/, level: 'critical', desc: 'P0 递归删除目录树 (Win)', category: '文件系统' },
       { pattern: /format\s+[A-Z]:(?!.*\/\?)/, level: 'critical', desc: 'P0 格式化磁盘 (Win)', category: '文件系统' },
       { pattern: /diskpart/, level: 'critical', desc: 'P0 磁盘分区工具 (Win)', category: '文件系统' },
@@ -198,8 +198,8 @@ class RuntimeGuardian {
     let score = 0;
 
     if (session.calls.length > 0) {
-      const elapsed = (Date.now() - session.calls[0].timestamp) / 60000;
-      const cpm = elapsed > 0 ? session.calls.length / elapsed : 0;
+      const elapsed = Math.max((Date.now() - session.calls[0].timestamp) / 60000, 0.001);
+      const cpm = session.calls.length / elapsed;
       if (cpm > 30) { details.push({ type: 'rapid_calls', severity: 'critical', cpm: cpm.toFixed(1) }); score += 40; }
       else if (cpm > 20) { details.push({ type: 'rapid_calls', severity: 'warning', cpm: cpm.toFixed(1) }); score += 20; }
     }

@@ -80,7 +80,7 @@ class MemoryGraph {
     this._discoverRelations(id);
 
     this._save();
-    return { id, created: true };
+    return { id, created: true, merged: false };
   }
 
   _extractKeywords(text) {

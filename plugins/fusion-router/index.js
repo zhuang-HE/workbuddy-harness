@@ -30,6 +30,7 @@ class FusionRouter {
     this.configDir = options.configDir || path.join(os.homedir(), '.workbuddy', 'fusion-router');
     this.routingLog = [];
     this.rules = [];
+    this.ROUTE_TARGET = ROUTE_TARGET;
     this._ensureConfig();
     this._initRules();
   }

@@ -37,6 +37,8 @@ class LearningLoop {
       CONTEXT_REUSE: { name: '上下文复用', weight: 70, threshold: { contextHits: 3 } },
       SELF_CORRECT: { name: '自我修正', weight: 88, threshold: { errorThenSuccess: true } }
     };
+    this.Phase = this.phase;
+    this.Confidence = this.confidence;
     this._ensureDirs();
     this._loadState();
   }
@@ -391,6 +393,9 @@ class LearningLoop {
       recommendations: this._generateRecommendations(analysis, instincts, jointResult)
     };
   }
+
+  // v2.0 alias for backward compat
+  runLearningCycle(sessionData) { return this.runFullCycle(sessionData); }
 
   _generateRecommendations(analysis, instincts, jointResult) {
     const recs = [];
