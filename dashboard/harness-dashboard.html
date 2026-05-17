@@ -25,8 +25,8 @@ th{color:#8b949e;font-weight:500}
 </style>
 </head>
 <body>
-<h1>⚡ WorkBuddy Harness v3.0</h1>
-<p class="sub">9 Dimensional AI Agent Infrastructure — <span id="ts"></span></p>
+<h1>WorkBuddy Harness Dashboard v3.0</h1>
+<p class="sub">9 Dimensional AI Agent Infrastructure — <span id="ts"></span> | <a href="#" onclick="loadRealData()" style="color:#58a6ff;font-size:12px">Load Real Data</a></p>
 
 <div class="grid" id="dash"></div>
 
@@ -34,10 +34,18 @@ th{color:#8b949e;font-weight:500}
 
 <script>
 const DATA = {
+  version: '3.0 (Real Eval)',
   dimensions: [
-    { id:'D1', name:'Identity', score:90, plugin:'context-awareness', desc:'四维上下文感知·动态策略调整' },
-    { id:'D2', name:'Memory', score:90, plugin:'memory-decay', desc:'指数衰减模型·重要性加权压缩' },
-    { id:'D3', name:'Skills', score:90, plugin:'skill-semantic-router', desc:'53+Skills·语义路由·自进化' },
+    { id:'D1', name:'Identity', score:60, plugin:'context-awareness', desc:'四维上下文感知·扫描环境项目时间', status:'yellow' },
+    { id:'D2', name:'Memory', score:70, plugin:'memory-decay', desc:'指数衰减模型·四层压缩·Git版本', status:'yellow' },
+    { id:'D3', name:'Skills', score:50, plugin:'skill-analyzer', desc:'53+Skills·依赖分析·热力图', status:'orange' },
+    { id:'D4', name:'Learning', score:55, plugin:'learning-loop', desc:'五阶段闭环O-A-L-E-A·本能导出', status:'orange' },
+    { id:'D5', name:'Orchestration', score:60, plugin:'task-orchestrator', desc:'DAG依赖·WorkerPool·退避重试', status:'yellow' },
+    { id:'D6', name:'Integration', score:45, plugin:'fusion-router', desc:'11领域路由·双向增量同步', status:'orange' },
+    { id:'D7', name:'Security', score:35, plugin:'runtime-guardian v2', desc:'42种模式·Win+Unix·持久化告警', status:'red' },
+    { id:'D8', name:'Evaluation', score:65, plugin:'eval-framework v2', desc:'30用例·A/B对比·回归检测·持久化', status:'yellow' },
+    { id:'D9', name:'MultiAgent', score:50, plugin:'multi-agent-orchestrator', desc:'三省六部·10团队模板·能力矩阵', status:'orange' }
+  ],
     { id:'D4', name:'Learning', score:90, plugin:'learning-loop', desc:'五阶段闭环·OBSERVE→APPLY' },
     { id:'D5', name:'Orchestration', score:88, plugin:'task-orchestrator', desc:'WorkerPool·PriorityQueue·Retry' },
     { id:'D6', name:'Integration', score:82, plugin:'fusion-router', desc:'智能路由·增量同步·健康监控' },
@@ -96,10 +104,28 @@ function render() {
   html += '</table></div>';
   
   document.getElementById('dash').innerHTML = html;
-  document.getElementById('status').textContent = 'Harness Dashboard v3.0 — 9维度·9插件·18Hooks·30用例';
+  document.getElementById('status').textContent = 'Harness Dashboard v3.2 — Real eval scores';
 }
 
 render();
+
+async function loadRealData() {
+  try {
+    const resp = await fetch('state.json');
+    if (resp.ok) {
+      const state = await resp.json();
+      for (const dim of DATA.dimensions) {
+        if (state.dimensions && state.dimensions[dim.id]) {
+          dim.score = state.dimensions[dim.id].score;
+        }
+      }
+      render();
+      document.getElementById('status').textContent = 'Live from state.json (v' + (state.version || '?') + ')';
+    }
+  } catch (e) {
+    document.getElementById('status').textContent = 'state.json not available - showing defaults';
+  }
+}
 </script>
 </body>
 </html>

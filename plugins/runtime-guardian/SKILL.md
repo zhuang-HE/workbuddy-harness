@@ -1,76 +1,57 @@
 # runtime-guardian 运行时守护者
 
-> **Skill 类型**: 系统插件
-> **版本**: 1.1.0 (规则扩充)
-> **优先级**: P4-4 (P0)
-> **维度**: D7-Security
-> **创建时间**: 2026-05-12
+> **Skill 类型**: 系统插件  
+> **版本**: 2.0.0 (引擎集成 + Windows 覆盖)  
+> **优先级**: P4-4 (P0)  
+> **维度**: D7-Security  
+> **创建时间**: 2026-05-12  
+> **更新时间**: 2026-05-17  
 > **触发词**: 安全扫描、运行时监控、命令检查、异常检测、guardian、security、runtime
 
 ## 功能概述
-实时工具调用监控，检测29种危险命令模式（12→29），文件访问控制，行为异常检测。
+实时工具调用监控，检测 42 种危险命令模式（覆盖 Unix + Windows），文件访问控制（glob 支持），行为异常检测（5 维），持久化告警存储，三模式运行。
+
+## v2.0 新增
+- **Windows 危险命令**: format, diskpart, del /F /S, rd /S /Q, reg delete, taskkill, icacls, Set-ExecutionPolicy, net user /add, Remove-Item -Recurse -Force
+- **持久化告警**: 告警写入 JSON 文件，进程重启不丢失
+- **增强异常检测**: 5 个维度（频率/错误率/拦截率/工具多样性/模式偏离）
+- **Glob 路径黑名单**: 支持 `*` 通配符匹配（如 `~/.workbuddy/skills/*/credentials*`）
+- **引擎集成**: 通过 `harness guardian` CLI 及 Hook Runner 的 harness action 调用
 
 ## 运行模式
 | 模式 | 说明 |
 |------|------|
-| observe | 仅记录日志，不阻断 |
-| enforce | 阻断critical违规 |
+| observe | 仅记录日志，不阻断（默认） |
+| enforce | 阻断 P0 critical 违规 |
 | adaptive | 根据风险动态调整 |
 
-## 检测规则（29种→25目标+超额完成）
+## 检测规则 (42 种)
 
-### P0 极高危（立即阻断）
-| 模式 | 说明 | 分类 |
-|------|------|------|
-| rm -rf / | 删除根目录 | 文件系统 |
-| rm -rf /* | 删除全部文件 | 文件系统 |
-| curl ... \| sh | 远程脚本执行 | 远程执行 |
-| wget ... \| sh | 远程脚本下载执行 | 远程执行 |
-| :(){ :\|:& };: | Fork Bomb | 资源耗尽 |
-| mkfs.* | 格式化磁盘 | 文件系统 |
-| dd if=...of=/dev/* | 磁盘直接写入 | 文件系统 |
-| > /dev/sd* | 写入块设备 | 文件系统 |
-| shutdown/init 0/halt | 系统关机命令 | 系统控制 |
-| eval $($... | 动态代码执行 | 代码注入 |
-| exec rm | 强制删除执行 | 文件系统 |
+### P0 极高危 (18 种，立即阻断)
+包含原有 11 种 Unix + 新增 7 种 Windows：format, diskpart, del /F /S, rd /S /Q, reg delete HK, shutdown /s, Remove-Item -Recurse -Force
 
-### P1 高危（需确认）
-| 模式 | 说明 | 分类 |
-|------|------|------|
-| chmod 777 | 不安全权限设置 | 权限 |
-| sudo | 提权操作 | 权限 |
-| chmod -R 777 | 递归777权限 | 权限 |
-| git push --force | Git强制推送 | 版本控制 |
-| git push -f | Git快捷强制推送 | 版本控制 |
-| npm publish | NPM发布 | 发布 |
-| pip install --user | 用户级pip安装 | 依赖 |
-| composer global | Composer全局安装 | 依赖 |
-| > /etc/* | 覆盖系统配置 | 文件系统 |
-| rm -rf ./ | 当前目录递归删除 | 文件系统 |
-| find ... -delete | find删除操作 | 文件系统 |
-| docker run --privileged | Docker特权模式 | 容器 |
+### P1 高危 (16 种，需确认)  
+包含原有 12 种 + 新增 4 种：icacls /grant, reg add HK*Run, net user /add, Set-ExecutionPolicy Unrestricted
 
-### P2 中危（记录）
-| 模式 | 说明 | 分类 |
-|------|------|------|
-| npm i -g | NPM全局安装 | 依赖 |
-| pip install | pip安装包 | 依赖 |
-| kill -9 | 强制终止进程 | 进程 |
-| pkill | 批量终止进程 | 进程 |
-| curl ... .sh/.py/.rb | 下载脚本 | 下载 |
-| nc -l | 网络监听 | 网络 |
+### P2 中危 (8 种，记录)
+包含原有 6 种 + 新增 2 种：taskkill /F, Invoke-Expression
 
-## 文件访问黑名单
-/etc/passwd, /etc/shadow, /etc/sudoers, ~/.ssh/, ~/.aws/, ~/.gnupg/, .env, credentials.json, secrets.yaml, id_rsa, *.pem, C:\Windows\System32\
-
-## CLI命令
+## CLI 命令
 ```bash
-node runtime-guardian.js scan "rm -rf /"
-node runtime-guardian.js alerts
-node runtime-guardian.js mode observe
-node runtime-guardian.js report
+node runtime-guardian/index.js scan "rm -rf /" command     # 扫描命令
+node runtime-guardian/index.js scan "/etc/passwd" file     # 检查文件路径
+node runtime-guardian/index.js alerts                       # 查看活跃告警
+node runtime-guardian/index.js alerts resolve <id>          # 解决告警
+node runtime-guardian/index.js mode observe|enforce         # 设置模式
+node runtime-guardian/index.js report                       # 生成安全报告
+node runtime-guardian/index.js stats                        # 总体统计
+
+# 通过 Harness Engine 调用
+node engine/index.js guardian scan "del /F /S /Q C:\\"
+node engine/index.js guardian stats
 ```
 
 ## 版本历史
-| 2026-05-12 | 1.0.0 | 初始版本：12种危险命令、3种运行模式、文件访问控制 |
-| 2026-05-14 | 1.1.0 | 扩充至29种危险命令：P0×11 + P1×12 + P2×6，新增分类标签 |
+| 2026-05-12 | 1.0.0 | 初始版本：12种危险命令、3种运行模式 |
+| 2026-05-14 | 1.1.0 | 扩充至29种危险命令 |
+| 2026-05-17 | 2.0.0 | Windows覆盖、持久化告警、增强异常检测、引擎集成 |

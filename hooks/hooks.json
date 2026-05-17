@@ -1,6 +1,6 @@
 {
-  "version": "1.0",
-  "description": "WorkBuddy Hooks System 配置",
+  "version": "2.0",
+  "description": "WorkBuddy Hooks System v2.0 - Engine-enabled actions",
   
   "hooks": [
     {
@@ -11,15 +11,9 @@
       "description": "会话结束时自动提取高价值信息并更新记忆",
       "condition": "complexity > 3",
       "actions": [
-        {
-          "type": "execute",
-          "command": "python",
-          "args": ["-c", "print('更新记忆')"],
-          "timeout": 30
-        }
+        { "type": "harness", "plugin": "memory-decay", "method": "registerMemory", "args": [{ "content": "{{task_description}}", "type": "task_state", "importance": 3 }] }
       ]
     },
-    
     {
       "id": "session_end_sync",
       "type": "session_end",
@@ -28,14 +22,9 @@
       "description": "会话结束时同步记忆到 Obsidian",
       "condition": "hasChanges == true",
       "actions": [
-        {
-          "type": "sync",
-          "target": "obsidian",
-          "direction": "push"
-        }
+        { "type": "sync", "target": "obsidian", "direction": "push" }
       ]
     },
-    
     {
       "id": "tool_error_recovery",
       "type": "tool_error",
@@ -44,35 +33,21 @@
       "description": "工具执行失败时尝试自动恢复",
       "condition": "exitCode != 0",
       "actions": [
-        {
-          "type": "log",
-          "level": "error",
-          "message": "工具 {{tool_name}} 执行失败: {{error}}"
-        },
-        {
-          "type": "notify",
-          "channel": "console",
-          "message": "⚠️ 工具执行失败，建议检查命令"
-        }
+        { "type": "log", "level": "error", "message": "Tool {{tool_name}} failed: {{error}}" },
+        { "type": "notify", "channel": "console", "message": "Tool error: {{tool_name}}" }
       ]
     },
-    
     {
       "id": "task_complete_reflection",
       "type": "task_complete",
       "enabled": true,
-      "name": "任务完成五维反思",
-      "description": "复杂任务完成后进行五维反思并更新置信度",
+      "name": "任务完成反思",
+      "description": "复杂任务完成后进行反思",
       "condition": "complexity > 5",
       "actions": [
-        {
-          "type": "log",
-          "level": "info",
-          "message": "任务 {{task_id}} 完成，进行五维反思"
-        }
+        { "type": "log", "level": "info", "message": "Task {{task_id}} completed" }
       ]
     },
-    
     {
       "id": "context_auto_compress",
       "type": "turn_end",
@@ -81,335 +56,145 @@
       "description": "上下文使用率超过 80% 时自动压缩",
       "condition": "context_usage > 0.8",
       "actions": [
-        {
-          "type": "compress",
-          "target_ratio": 0.3,
-          "preserve_system": true
-        }
+        { "type": "compress", "target_ratio": 0.3, "preserve_system": true }
       ]
     },
-    
     {
       "id": "pre_tool_safety",
       "type": "pre_tool_use",
       "enabled": true,
       "name": "工具执行前安全检查",
-      "description": "执行危险命令前记录日志",
+      "description": "执行危险命令前安全检查",
       "condition": "isDangerous == true",
       "actions": [
-        {
-          "type": "log",
-          "level": "warn",
-          "message": "⚠️ 即将执行危险命令: {{tool_name}}"
-        }
+        { "type": "harness", "plugin": "runtime-guardian", "method": "scanCommand", "args": ["{{args}}"] }
       ]
     },
-    
-    {
-      "id": "post_tool_success",
-      "type": "post_tool_use",
-      "enabled": false,
-      "name": "工具成功执行日志",
-      "description": "记录工具成功执行",
-      "condition": "exitCode == 0",
-      "actions": [
-        {
-          "type": "log",
-          "level": "info",
-          "message": "✓ {{tool_name}} 执行成功"
-        }
-      ]
-    },
-    
-    {
-      "id": "turn_end_stats",
-      "type": "turn_end",
-      "enabled": false,
-      "name": "轮次统计",
-      "description": "记录每轮对话统计",
-      "condition": null,
-      "actions": [
-        {
-          "type": "log",
-          "level": "info",
-          "message": "轮次统计: tokens={{tokens}}, time={{duration}}ms"
-        }
-      ]
-    },
-    
-    {
-      "id": "session_start_welcome",
-      "type": "session_start",
-      "enabled": false,
-      "name": "会话开始欢迎",
-      "description": "会话开始时显示欢迎信息",
-      "condition": null,
-      "actions": [
-        {
-          "type": "notify",
-          "channel": "console",
-          "message": "👋 会话开始，当前上下文使用: {{context_usage}}%"
-        }
-      ]
-    },
-    
-    {
-      "id": "user_message_pattern",
-      "type": "user_message",
-      "enabled": false,
-      "name": "用户消息模式识别",
-      "description": "识别用户消息中的模式",
-      "condition": "containsKeyword == true",
-      "actions": [
-        {
-          "type": "log",
-          "level": "info",
-          "message": "识别到关键词: {{keyword}}"
-        }
-      ]
-    },
-    
     {
       "id": "guardian_pre_tool_check",
       "type": "pre_tool_use",
       "enabled": true,
-      "name": "[P4-4] 运行时安全扫描",
-      "description": "工具执行前通过 RuntimeGuardian 进行安全扫描",
+      "name": "运行时安全扫描 (v2.0)",
+      "description": "工具执行前通过 RuntimeGuardian v2.0 进行安全扫描",
       "condition": "tool_name == Bash || tool_name == PowerShell || tool_name == Write",
       "actions": [
-        {
-          "type": "execute",
-          "command": "node",
-          "args": ["-e", "const RG=require('~/.workbuddy/plugins/runtime-guardian/index.js');const rg=new RG();const r=rg.checkCommand(process.argv[1]);if(!r.safe){console.log(JSON.stringify(r));process.exit(1)}", "{{args}}"],
-          "timeout": 10
-        }
+        { "type": "harness", "plugin": "runtime-guardian", "method": "preToolCheck", "args": ["{{tool_name}}", "{{args}}"] }
       ]
     },
-    
     {
       "id": "orch_task_decompose",
       "type": "task_start",
       "enabled": true,
-      "name": "[P4-1] 复杂任务自动分解",
-      "description": "复杂度≥6的任务自动通过 TaskOrchestrator 分解",
+      "name": "复杂任务自动分解",
+      "description": "复杂度>=6的任务自动分解",
       "condition": "complexity >= 6",
       "actions": [
-        {
-          "type": "log",
-          "level": "info",
-          "message": "[TaskOrchestrator] 检测到复杂任务 (复杂度={{complexity}})，触发任务分解"
-        },
-        {
-          "type": "execute",
-          "command": "node",
-          "args": ["-e", "const TO=require('~/.workbuddy/plugins/task-orchestrator/index.js');const to=new TO();const r=to.decomposeGoal('{{task_description}}');console.log(JSON.stringify({tasks:r.tasks.length,complexity:r.complexity,deps:r.graph.length}))"],
-          "timeout": 15
-        }
+        { "type": "harness", "plugin": "task-orchestrator", "method": "decomposeGoal", "args": ["{{task_description}}"] }
       ]
     },
-    
     {
       "id": "eval_regression_check",
       "type": "task_complete",
       "enabled": true,
-      "name": "[P4-2] 评测回归检测",
-      "description": "复杂任务完成后运行 EvalFramework 回归检测",
+      "name": "评测回归检测",
+      "description": "复杂任务完成后运行回归检测",
       "condition": "complexity >= 7",
       "actions": [
-        {
-          "type": "log",
-          "level": "info",
-          "message": "[EvalFramework] 复杂任务完成，触发回归检测"
-        },
-        {
-          "type": "execute",
-          "command": "node",
-          "args": ["-e", "const EF=require('~/.workbuddy/plugins/eval-framework/index.js');const ef=new EF();const baseline=ef.getBaseline('current');console.log(baseline?'回归检测完成':'无基线数据-跳过')"],
-          "timeout": 15
-        }
+        { "type": "harness", "plugin": "eval-framework", "method": "startTracking", "args": ["{{session_id}}"] }
       ]
     },
-    
     {
       "id": "mao_auto_route",
       "type": "task_start",
       "enabled": true,
-      "name": "[P4-3] 多Agent智能路由 v2.0",
-      "description": "按复杂度自动选择协作模式：<5 Quick单人，5-7 Standard 3人，≥8 Full 5人",
+      "name": "多Agent智能路由",
+      "description": "按复杂度自动选择协作模式",
       "condition": "complexity >= 4",
       "actions": [
-        {
-          "type": "execute",
-          "command": "node",
-          "args": ["-e", "const MAO=require('~/.workbuddy/plugins/multi-agent-orchestrator/index.js');const mao=new MAO();const r=mao.startOrchestration('{{task_description}}');console.log(JSON.stringify({mode:r.mode,team:r.teamName||'QUICK-跳过组队',members:r.memberCount||0,tasks:r.tasks?r.tasks.length:1,complexity:r.estimatedComplexity||r.complexity}))"],
-          "timeout": 10
-        },
-        {
-          "type": "log",
-          "level": "info",
-          "message": "[MAO v2.0] 复杂度={{complexity}} → {{mao_route.mode}}模式 → {{mao_route.team}}"
-        }
+        { "type": "harness", "plugin": "multi-agent-orchestrator", "method": "startOrchestration", "args": ["{{task_description}}"] }
       ]
     },
-    
     {
       "id": "context_scan_on_start",
       "type": "session_start",
       "enabled": true,
-      "name": "[P4-5] 会话开始上下文扫描",
-      "description": "会话开始时运行 ContextAwareness 扫描环境/项目/时间",
+      "name": "会话开始上下文扫描",
+      "description": "会话开始时扫描环境/项目/时间",
       "actions": [
-        {
-          "type": "execute",
-          "command": "node",
-          "args": ["-e", "const CA=require('~/.workbuddy/plugins/context-awareness/index.js');const ca=new CA();const ctx=ca.scanAll();console.log(JSON.stringify({project:ctx.project.name,type:ctx.project.type,time:ctx.time.timeOfDay,os:ctx.environment.os}))"],
-          "timeout": 10
-        },
-        {
-          "type": "log",
-          "level": "info",
-          "message": "[ContextAwareness] 上下文已扫描: {{context_summary}}"
-        }
+        { "type": "harness", "plugin": "context-awareness", "method": "scanAll" }
       ]
     },
-    
     {
       "id": "decay_compress_on_overload",
       "type": "turn_end",
       "enabled": true,
-      "name": "[P4-6] 记忆衰减压缩",
-      "description": "长会话(>15轮)时触发 MemoryDecay 上下文压缩",
+      "name": "记忆衰减压缩",
+      "description": "长会话(>15轮)时触发记忆压缩",
       "condition": "turn_count >= 15 && (turn_count % 5 == 0)",
       "actions": [
-        {
-          "type": "execute",
-          "command": "node",
-          "args": ["-e", "const MD=require('~/.workbuddy/plugins/memory-decay/index.js');const md=new MD();const stats=md.getDecayStats();const health=md.getMemoryHealthScore();console.log(JSON.stringify({stats,health}))"],
-          "timeout": 10
-        },
-        {
-          "type": "compress",
-          "target_ratio": 0.4,
-          "preserve_system": true
-        }
+        { "type": "harness", "plugin": "memory-decay", "method": "getDecayStats" },
+        { "type": "compress", "target_ratio": 0.4, "preserve_system": true }
       ]
     },
-    
     {
       "id": "fusion_sync_on_end",
       "type": "session_end",
       "enabled": true,
-      "name": "[P4-7] 会话结束融合同步",
-      "description": "会话结束时触发 FusionSyncEnhancer 增量同步到 HERMES",
+      "name": "会话结束融合同步",
+      "description": "会话结束时增量同步",
       "condition": "hasChanges == true",
       "actions": [
-        {
-          "type": "execute",
-          "command": "node",
-          "args": ["-e", "const FSE=require('~/.workbuddy/plugins/fusion-sync-enhancer/index.js');const fse=new FSE();const r=fse.incrementalSync('wb→hm',{dryRun:false});console.log('Sync:',r.summary.totalOps,'ops,',r.summary.conflicts,'conflicts')"],
-          "timeout": 30
-        },
-        {
-          "type": "log",
-          "level": "info",
-          "message": "[FusionSyncEnhancer] 同步完成: {{sync_summary}}"
-        }
+        { "type": "harness", "plugin": "fusion-sync-enhancer", "method": "incrementalSync", "args": ["wb_to_hm", { "dryRun": false }] }
       ]
     },
-    
     {
       "id": "eval_runtime_auto",
       "type": "session_start",
       "enabled": true,
-      "name": "[P4-2] 运行时评测追踪",
-      "description": "会话开始时自动启动 EvalFramework 运行时追踪",
+      "name": "运行时评测追踪 (v2.0)",
+      "description": "会话开始时自动启动评测追踪",
       "actions": [
-        {
-          "type": "execute",
-          "command": "node",
-          "args": ["-e", "const EF=require('~/.workbuddy/plugins/eval-framework/index.js');const ef=new EF();ef.startTracking('{{session_id}}');console.log('[Eval] Tracking:', '{{session_id}}')"],
-          "timeout": 5
-        }
+        { "type": "harness", "plugin": "eval-framework", "method": "startTracking", "args": ["{{session_id}}"] }
       ]
     },
-    
     {
       "id": "eval_runtime_end",
       "type": "session_end",
       "enabled": true,
-      "name": "[P4-2] 会话结束评测汇总",
+      "name": "会话结束评测汇总 (v2.0)",
       "description": "会话结束时汇总运行时评测数据",
       "actions": [
-        {
-          "type": "execute",
-          "command": "node",
-          "args": ["-e", "const EF=require('~/.workbuddy/plugins/eval-framework/index.js');const ef=new EF();const m=ef.endTracking('{{session_id}}');if(m)console.log(JSON.stringify({overall:m.overallScore,completion:m.taskCompletionRate,safety:m.safetyScore}))"],
-          "timeout": 10
-        }
+        { "type": "harness", "plugin": "eval-framework", "method": "endTracking", "args": ["{{session_id}}"] }
       ]
     },
-    
     {
       "id": "learning_loop_cycle",
       "type": "session_end",
       "enabled": true,
-      "name": "[P4-8] 学习闭环周期",
-      "description": "会话结束时运行 LearningLoop 分析→提取→强化周期",
+      "name": "学习闭环周期",
+      "description": "会话结束时运行学习周期",
       "condition": "complexity >= 4",
       "actions": [
-        {
-          "type": "execute",
-          "command": "node",
-          "args": ["-e", "const LL=require('~/.workbuddy/plugins/learning-loop/index.js');const l=new LL();const r=l.runLearningCycle({id:'{{session_id}}',taskType:'{{task_type}}',complexity:{{complexity}},toolCalls:{{tool_calls}},success:{{success}},duration:{{duration}}});console.log('[Learn] Cycle',r.cycle,':',r.instinctsExtracted,'instincts,',r.totalInstincts,'total')"],
-          "timeout": 15
-        }
+        { "type": "harness", "plugin": "learning-loop", "method": "runLearningCycle", "args": [{ "id": "{{session_id}}", "taskType": "{{task_type}}", "complexity": "{{complexity}}", "success": "{{success}}" }] }
       ]
     },
-    
-    {
-      "id": "orch_priority_schedule",
-      "type": "task_start",
-      "enabled": true,
-      "name": "[P4-1] 优先级调度",
-      "description": "复杂任务自动进入优先级队列调度",
-      "condition": "complexity >= 5",
-      "actions": [
-        {
-          "type": "execute",
-          "command": "node",
-          "args": ["-e", "const TO=require('~/.workbuddy/plugins/task-orchestrator/index.js');const to=new TO();const r=to.scheduleWithPriority('{{task_id}}',{{complexity}});console.log('[Sched] Queued:',r.taskId,'pri=',r.priority,'q=',r.queueLength)"],
-          "timeout": 5
-        }
-      ]
-    },
-    
     {
       "id": "fusion_route_task",
       "type": "task_start",
       "enabled": true,
-      "name": "[P4-9] 融合智能路由",
-      "description": "任务启动时 FusionRouter 分析最佳执行系统(WB/HERMES/协作)",
+      "name": "融合智能路由",
+      "description": "任务启动时分析最佳执行系统",
       "actions": [
-        {
-          "type": "execute",
-          "command": "node",
-          "args": ["-e", "const FR=require('~/.workbuddy/plugins/fusion-router/index.js');const fr=new FR();const r=fr.route({description:'{{task_description}}'});console.log(JSON.stringify({route:r.winner,confidence:r.confidence,rec:r.recommendation}))"],
-          "timeout": 10
-        },
-        {
-          "type": "log",
-          "level": "info",
-          "message": "[FusionRouter] → {{route}} ({{confidence}}%)"
-        }
+        { "type": "harness", "plugin": "fusion-router", "method": "route", "args": [{ "description": "{{task_description}}" }] }
       ]
     }
   ],
   
   "_metadata": {
     "created": "2026-05-11",
-    "updated": "2026-05-12 16:30",
-    "author": "WorkBuddy AI Engineer",
-    "version": "2.4",
-    "changes": "MAO v2.0优化: Agent 7→5核心+2扩展, 团队8→6核心, 三级协作模式, 质量门禁, 模型动态绑定"
+    "updated": "2026-05-17",
+    "author": "WorkBuddy Harness v2.0",
+    "version": "2.0",
+    "changes": "v2.0: Replace node -e require(...) patterns with harness action type. All hooks use HookRunner engine for execution."
   }
 }
